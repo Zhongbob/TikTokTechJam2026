@@ -1,12 +1,12 @@
 [project]
-name = "Our Classifier"       
+name = "shared_types"
 version = "0.1.0"
-description = "This classifier directly trains off the augmented images in order to determine if the image is AI generated or not."
+description = "Shared dataclasses, enums, and interfaces used across the AI-image-detection pipeline (transforms, detection results, dataset manifest, model interfaces)."
 requires-python = ">=3.11"
 
 dependencies = [
-    # runtime deps specific to THIS package only
-    # e.g. "torch>=2.2", "transformers", "numpy"
+    "numpy>=1.26",
+    "pillow>=10.0",
 ]
 
 [build-system]

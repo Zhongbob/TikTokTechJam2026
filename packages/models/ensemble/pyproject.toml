@@ -1,5 +1,5 @@
 [project]
-name = "Ensemble Model"       
+name = "ensemble"
 version = "0.1.0"
 description = "Ensemble Model which combines all listed models"
 requires-python = ">=3.11"
