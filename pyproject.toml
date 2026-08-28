@@ -1,0 +1,13 @@
+[project]
+name = "TikTokTechJam Bums"       
+version = "0.1.0"
+description = "Bums"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = [
+    "apps/*",
+    "packages/models/*",
+    "packages/data/*",
+    "libs/*"
+]
