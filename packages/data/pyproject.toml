@@ -1,5 +1,5 @@
 [project]
-name = "Data Generation"       
+name = "data"
 version = "0.1.0"
 description = "This augments the images using the listed augmentations in the problem statement."
 requires-python = ">=3.11"

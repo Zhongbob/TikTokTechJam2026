@@ -1,5 +1,5 @@
 [project]
-name = "Autoencoder"       
+name = "autoencoder"
 version = "0.1.0"
 description = "This autoencoder transforms the augmented image back into it's original form to the best of it's ability."
 requires-python = ">=3.11"

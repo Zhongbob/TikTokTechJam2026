@@ -1,5 +1,5 @@
 [project]
-name = "TikTokTechJam Bums"       
+name = "TikTokTechJamBums"       
 version = "0.1.0"
 description = "Bums"
 requires-python = ">=3.11"
@@ -8,6 +8,6 @@ requires-python = ">=3.11"
 members = [
     "apps/*",
     "packages/models/*",
-    "packages/data/*",
+    "packages/data",
     "libs/*"
 ]
