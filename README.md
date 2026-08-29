@@ -82,7 +82,7 @@ uv run src/data/main.py --output ../../images/output local --input ../../images/
 or, streaming a balanced subset from the SID-Set dataset:
 
 ```powershell
-uv run python -m data.main --output outputs/sid --num-augmentations 6 --backend process --workers 4 sid --images-per-label 100
+uv run python -m data.main --output outputs/sid --num-augmentations 6 --backend process --workers 4 sid --images-per-label 100 --hf-token <YOUR_HF_TOKEN>
 ```
 
 See [packages/data/README.md](packages/data/README.md) for the full CLI

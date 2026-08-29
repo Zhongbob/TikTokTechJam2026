@@ -11,23 +11,12 @@ from shared_types import LabeledImageSample, SourceMetadata
 LABEL_NAMES = {0: "real", 1: "synthetic", 2: "tampered"}
 
 
-def iter_sid_subset(
-    images_per_label: int, seed: int = 4, buffer_size: int = 100, split: str = "train"
-) -> Iterator[LabeledImageSample]:
-    """Streams a balanced SID-Set subset one sample at a time.
-
-    Same selection logic as `load_sid_subset()`, but yields each
-    `LabeledImageSample` as it's found instead of accumulating everything
-    into a list first. Use this for large `images_per_label` counts —
-    `load_sid_subset(images_per_label=1000)` holds ~3000 full decoded RGB
-    images in memory at once (one per SID label) before returning anything;
-    this holds at most one (plus the shuffle buffer) at a time.
-
-    Feed the result straight into `TrainableModel.train()`/`.evaluate()`
-    implementations that accept an `Iterable[LabeledImageSample]` — they
-    only need one pass, so nothing here needs to be materialized.
-    """
+def load_sid_subset(images_per_label: int, seed: int = 4, buffer_size: int = 100, hf_token: str = None):
     # Lazy import keeps local-folder generation usable without Hugging Face.
+    import os
+    if hf_token is not None:
+        os.environ["HF_TOKEN"] = hf_token
+
     from datasets import load_dataset
 
     if images_per_label < 1:
