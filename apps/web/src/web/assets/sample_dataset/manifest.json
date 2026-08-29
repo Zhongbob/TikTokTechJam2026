@@ -1,0 +1,50 @@
+[
+  {
+    "img_id": "real_001",
+    "file_name": "real_001.jpg",
+    "label_name": "real",
+    "binary_aigc_label": 0,
+    "sid_label": 0,
+    "description": "Placeholder real-photo sample (procedurally generated)."
+  },
+  {
+    "img_id": "real_002",
+    "file_name": "real_002.jpg",
+    "label_name": "real",
+    "binary_aigc_label": 0,
+    "sid_label": 0,
+    "description": "Placeholder real-photo sample (procedurally generated)."
+  },
+  {
+    "img_id": "real_003",
+    "file_name": "real_003.jpg",
+    "label_name": "real",
+    "binary_aigc_label": 0,
+    "sid_label": 0,
+    "description": "Placeholder real-photo sample (procedurally generated)."
+  },
+  {
+    "img_id": "ai_001",
+    "file_name": "ai_001.jpg",
+    "label_name": "ai_generated",
+    "binary_aigc_label": 1,
+    "sid_label": 0,
+    "description": "Placeholder AI-generated sample (procedurally generated)."
+  },
+  {
+    "img_id": "ai_002",
+    "file_name": "ai_002.jpg",
+    "label_name": "ai_generated",
+    "binary_aigc_label": 1,
+    "sid_label": 0,
+    "description": "Placeholder AI-generated sample (procedurally generated)."
+  },
+  {
+    "img_id": "ai_003",
+    "file_name": "ai_003.jpg",
+    "label_name": "ai_generated",
+    "binary_aigc_label": 1,
+    "sid_label": 0,
+    "description": "Placeholder AI-generated sample (procedurally generated)."
+  }
+]
