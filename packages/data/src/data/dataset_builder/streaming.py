@@ -44,8 +44,11 @@ class AugmentedSIDDataset:
         augment: when False, images are passed through untouched (only
             resized if ``output_size`` is set) -- use this for a validation
             or test stream you want left clean.
-        num_augmentations: how many of the six transforms to apply per image
-            (1-6), forwarded to `ImageAugmenter.transform_one()`.
+        num_augmentations: how many of the six transforms to chain onto each
+            image, forwarded to `ImageAugmenter.transform_one()`. A fixed int
+            (1-6) applies that many to every image; an inclusive ``(min, max)``
+            pair draws a random count per image, so different images get
+            random-length transform chains.
         output_size: (width, height) to resize every image to before
             augmenting; None keeps native resolution.
     """
@@ -59,7 +62,7 @@ class AugmentedSIDDataset:
         hf_token: str | None = None,
         *,
         augment: bool = True,
-        num_augmentations: int = 6,
+        num_augmentations: int | tuple[int, int] = 6,
         output_size: tuple[int, int] | None = None,
     ) -> None:
         if images_per_label < 1:
@@ -81,7 +84,8 @@ class AugmentedSIDDataset:
         return self.images_per_label * len(LABEL_NAMES)
 
     def __repr__(self) -> str:
-        mode = f"augment x{self.num_augmentations}" if self.augment else "clean"
+        n = self.num_augmentations
+        mode = f"augment {n if isinstance(n, int) else f'{n[0]}-{n[1]}'}" if self.augment else "clean"
         return (
             f"AugmentedSIDDataset(split={self.split!r}, per_label={self.images_per_label}, "
             f"{mode}, output_size={self.output_size})"

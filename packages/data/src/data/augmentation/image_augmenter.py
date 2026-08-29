@@ -93,19 +93,35 @@ class ImageAugmenter:
             return self.center_crop(image, crop_ratio = float(self.rng.uniform(*self.CENTER_CROP_RANGE)))
         raise ValueError(f"Unknown transform: {transform}")
 
-    def transform_one(self, image: ImageInput, num_augmentations: int = 6) -> tuple[np.ndarray, AugmentationRecord]:
-        if not 1 <= num_augmentations <= len(self.TRANSFORMS):
-            raise ValueError("num_augmentations must be between 1 and 6")
+    def _resolve_num_augmentations(self, num_augmentations: int | tuple[int, int]) -> int:
+        """Accept a fixed count or an inclusive ``(min, max)`` range; when a
+        range is given, draw a per-call count uniformly from it so different
+        images get random-length transform chains."""
+        if isinstance(num_augmentations, int):
+            low = high = num_augmentations
+        else:
+            low, high = num_augmentations
+        if not 1 <= low <= high <= len(self.TRANSFORMS):
+            raise ValueError(
+                "num_augmentations must be an int in 1..6, or a (min, max) pair within that range"
+            )
+        return int(self.rng.integers(low, high + 1))
+
+    def transform_one(
+        self, image: ImageInput, num_augmentations: int | tuple[int, int] = 6
+    ) -> tuple[np.ndarray, AugmentationRecord]:
+        count = self._resolve_num_augmentations(num_augmentations)
         transformed, source = self.load_rgb(image)
         order = list(self.TRANSFORMS)
         self.rng.shuffle(order)
-        selected = order[:num_augmentations]
+        selected = order[:count]
         steps = []
         for name in selected:
             transformed, parameters = self._apply_random_parameters(transformed, name)
             steps.append({"transform": name, "parameters": parameters})
-        record = AugmentationRecord(source, f"random_{num_augmentations}_of_6", {
-            "num_augmentations": num_augmentations,
+        record = AugmentationRecord(source, f"random_{count}_of_6", {
+            "num_augmentations": count,
+            "requested_num_augmentations": num_augmentations,
             "available_transforms": list(self.TRANSFORMS),
             "order": selected,
             "steps": steps,
@@ -115,7 +131,7 @@ class ImageAugmenter:
     def transform_images(
         self,
         images: Sequence[ImageInput],
-        num_augmentations: int = 6,
+        num_augmentations: int | tuple[int, int] = 6,
         return_metadata: bool = False,
         backend: str = "sequential",
         num_workers: int | None = None,
@@ -147,7 +163,7 @@ class ImageAugmenter:
     def iter_transform_images(
         self,
         images: Iterable[ImageInput],
-        num_augmentations: int = 6,
+        num_augmentations: int | tuple[int, int] = 6,
         return_metadata: bool = False,
         backend: str = "sequential",
         num_workers: int | None = None,
@@ -192,7 +208,9 @@ class ImageAugmenter:
                 yield emit(pending.popleft().result())
 
 
-def _transform_worker(payload: tuple[ImageInput, tuple[int, int] | None, int, int]) -> tuple[np.ndarray, AugmentationRecord]:
+def _transform_worker(
+    payload: tuple[ImageInput, tuple[int, int] | None, int, int | tuple[int, int]],
+) -> tuple[np.ndarray, AugmentationRecord]:
     """Top-level worker required by Python multiprocessing."""
     image, output_size, seed, num_augmentations = payload
     return ImageAugmenter(output_size, seed).transform_one(image, num_augmentations)

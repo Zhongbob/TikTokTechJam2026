@@ -224,6 +224,19 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
 # results. Sizes and epochs are all flags so it stays quick by default.
 
 
+def _num_augmentations(value: str) -> "int | tuple[int, int]":
+    """Parse ``N`` (fixed count) or ``MIN-MAX`` (random per-image count)."""
+    import argparse
+
+    try:
+        if "-" in value:
+            low, high = (int(part) for part in value.split("-", 1))
+            return (low, high)
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("use an int 1-6, or a range like 2-5") from None
+
+
 def _build_cli_parser() -> "argparse.ArgumentParser":
     import argparse
 
@@ -237,8 +250,9 @@ def _build_cli_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
-    parser.add_argument("--num-augmentations", type=int, default=6, choices=range(1, 7),
-                        help="How many of the data package's 6 realistic corruptions to apply per training image.")
+    parser.add_argument("--num-augmentations", type=_num_augmentations, default=6, metavar="N|MIN-MAX",
+                        help="How many of the data package's 6 corruptions to chain per training image: "
+                             "a fixed count (e.g. 6) or a random per-image range (e.g. 2-5).")
     parser.add_argument("--augment-test", action="store_true",
                         help="Also corrupt the held-out set (default: evaluate on clean images).")
     parser.add_argument("--device", default="cpu", help="'cpu', '0', 'cuda:0', ...")
@@ -258,7 +272,7 @@ def _run_cli(argv: list[str] | None = None) -> None:
 
     print(
         f"Streaming SID-Set: {args.train_per_label}/label train "
-        f"(augment x{args.num_augmentations}), {args.test_per_label}/label test "
+        f"(augment {args.num_augmentations}), {args.test_per_label}/label test "
         f"({'augmented' if args.augment_test else 'clean'}) | "
         f"epochs={args.epochs} batch={args.batch} device={args.device}"
     )
