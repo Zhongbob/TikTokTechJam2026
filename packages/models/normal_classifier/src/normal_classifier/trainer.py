@@ -73,17 +73,18 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
     """Extend/instantiate this in your Colab notebook:
 
         from normal_classifier import NormalClassifierTrainer
-        from data.dataset_builder import iter_sid_subset, sid_subset_factory
+        from data.dataset_builder import augmented_sid_dataset
 
-        # Large, single-use training pull: iter_sid_subset() streams straight
-        # through train() without ever holding the whole set in memory.
-        train_samples = iter_sid_subset(images_per_label=1000, split="train")
-        # Validation set is iterated more than once (train's val pass,
-        # evaluate()); a factory re-streams it instead of materializing it.
-        make_val = sid_subset_factory(images_per_label=200, split="validation")
+        # Re-iterable, memory-bounded streams -- one decoded image at a time.
+        # Training images get the data package's realistic corruptions;
+        # the held-out set is left clean. Both re-stream on each iteration,
+        # so train()'s val pass and evaluate() can share `val`.
+        train = augmented_sid_dataset(images_per_label=1000, split="train", output_size=(224, 224))
+        val = augmented_sid_dataset(images_per_label=200, split="validation", augment=False, output_size=(224, 224))
 
         trainer = NormalClassifierTrainer()
-        result = trainer.train(train_samples, val_samples=make_val(), epochs=100)
+        result = trainer.train(train, val_samples=val, epochs=100)
+        trainer.evaluate(val)
         trainer.save("normal_classifier.pt")
 
     Or just run this module for a small streamed smoke test:
@@ -224,6 +225,10 @@ def _build_cli_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--num-augmentations", type=int, default=6, choices=range(1, 7),
+                        help="How many of the data package's 6 realistic corruptions to apply per training image.")
+    parser.add_argument("--augment-test", action="store_true",
+                        help="Also corrupt the held-out set (default: evaluate on clean images).")
     parser.add_argument("--device", default="cpu", help="'cpu', '0', 'cuda:0', ...")
     parser.add_argument("--seed", type=int, default=4)
     parser.add_argument("--buffer-size", type=int, default=100,
@@ -235,32 +240,35 @@ def _build_cli_parser() -> "argparse.ArgumentParser":
 
 
 def _run_cli(argv: list[str] | None = None) -> None:
-    from data.dataset_builder import iter_sid_subset, sid_subset_factory
+    from data.dataset_builder import augmented_sid_dataset
 
     args = _build_cli_parser().parse_args(argv)
 
     print(
-        f"Streaming SID-Set: {args.train_per_label}/label train, "
-        f"{args.test_per_label}/label test | epochs={args.epochs} batch={args.batch} device={args.device}"
+        f"Streaming SID-Set: {args.train_per_label}/label train "
+        f"(augment x{args.num_augmentations}), {args.test_per_label}/label test "
+        f"({'augmented' if args.augment_test else 'clean'}) | "
+        f"epochs={args.epochs} batch={args.batch} device={args.device}"
     )
 
-    # Training pull: a single-use stream, consumed once by train() as it
-    # writes each image to disk -- never more than one decoded image in RAM.
-    train_samples = iter_sid_subset(
-        args.train_per_label, seed=args.seed, buffer_size=args.buffer_size,
-        split="train", hf_token=args.hf_token,
+    size = (args.image_size, args.image_size)
+    # Both are re-iterable, memory-bounded streams: one decoded image is live
+    # at a time, and each pass (train's val pass, then evaluate()) re-streams
+    # from Hugging Face rather than caching the subset.
+    train_samples = augmented_sid_dataset(
+        args.train_per_label, seed=args.seed, buffer_size=args.buffer_size, split="train",
+        hf_token=args.hf_token, num_augmentations=args.num_augmentations, output_size=size,
     )
-    # Test pull: iterated by evaluate() -- a factory hands back a fresh stream
-    # each call instead of materialising the set.
-    make_test_samples = sid_subset_factory(
-        args.test_per_label, seed=args.seed, buffer_size=args.buffer_size,
-        split="validation", hf_token=args.hf_token,
+    test_samples = augmented_sid_dataset(
+        args.test_per_label, seed=args.seed, buffer_size=args.buffer_size, split="validation",
+        hf_token=args.hf_token, augment=args.augment_test,
+        num_augmentations=args.num_augmentations, output_size=size,
     )
 
     trainer = NormalClassifierTrainer(base_weights=args.base_weights, image_size=args.image_size)
     result = trainer.train(
         train_samples,
-        val_samples=make_test_samples(),
+        val_samples=test_samples,
         output_dir=args.output_dir,
         epochs=args.epochs,
         batch=args.batch,
@@ -276,7 +284,7 @@ def _run_cli(argv: list[str] | None = None) -> None:
         for key, value in result.metrics.items():
             print(f"  {key}: {value:.4f}")
 
-    metrics = trainer.evaluate(make_test_samples(), output_dir=f"{args.output_dir}_eval")
+    metrics = trainer.evaluate(test_samples, output_dir=f"{args.output_dir}_eval")
     print("\n=== Held-out evaluation ===")
     for key, value in metrics.items():
         print(f"  {key}: {value:.4f}")
