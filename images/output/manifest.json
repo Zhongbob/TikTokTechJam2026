@@ -1,0 +1,78 @@
+[
+  {
+    "source_index": 0,
+    "source": "..\\..\\images\\input\\bum1.jpg",
+    "variant": "clean",
+    "input_path": "..\\..\\images\\output\\inputs\\000000_clean.png",
+    "target_path": "..\\..\\images\\output\\targets\\000000_clean.png",
+    "transform": "identity",
+    "parameters": {}
+  },
+  {
+    "source_index": 0,
+    "source": "..\\..\\images\\input\\bum1.jpg",
+    "variant": "augmented",
+    "input_path": "..\\..\\images\\output\\inputs\\000000_augmented.png",
+    "target_path": "..\\..\\images\\output\\targets\\000000_augmented.png",
+    "transform": "random_6_of_6",
+    "parameters": {
+      "num_augmentations": 6,
+      "available_transforms": [
+        "jpeg_compression",
+        "gaussian_blur",
+        "resize",
+        "gaussian_noise",
+        "color_jitter",
+        "center_crop"
+      ],
+      "order": [
+        "center_crop",
+        "color_jitter",
+        "gaussian_noise",
+        "jpeg_compression",
+        "resize",
+        "gaussian_blur"
+      ],
+      "steps": [
+        {
+          "transform": "center_crop",
+          "parameters": {
+            "crop_ratio": 0.4302046975848964
+          }
+        },
+        {
+          "transform": "color_jitter",
+          "parameters": {
+            "brightness": 0.8877380003910778,
+            "contrast": 0.8460139791243233,
+            "saturation": 0.98250421504672
+          }
+        },
+        {
+          "transform": "gaussian_noise",
+          "parameters": {
+            "sigma": 0.05
+          }
+        },
+        {
+          "transform": "jpeg_compression",
+          "parameters": {
+            "quality": 70
+          }
+        },
+        {
+          "transform": "resize",
+          "parameters": {
+            "scale": 0.5
+          }
+        },
+        {
+          "transform": "gaussian_blur",
+          "parameters": {
+            "sigma": 2.0
+          }
+        }
+      ]
+    }
+  }
+]
