@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     sid = subparsers.add_parser("sid", help="Stream a balanced SID-Set subset")
     sid.add_argument("--images-per-label", type=int, default=2)
     sid.add_argument("--shuffle-buffer", type=int, default=100)
+    sid.add_argument("--hf-token", default=None)
     return parser
 
 
@@ -45,7 +46,7 @@ def main() -> None:
     if args.source == "local":
         images = find_images(args.input, recursive=not args.no_recursive)
     else:
-        images, metadata = load_sid_subset(args.images_per_label, args.seed, args.shuffle_buffer)
+        images, metadata = load_sid_subset(args.images_per_label, args.seed, args.shuffle_buffer, args.hf_token)
 
     augmenter = ImageAugmenter(output_size=args.output_size, seed=args.seed)
     builder = AutoencoderDatasetBuilder(augmenter)

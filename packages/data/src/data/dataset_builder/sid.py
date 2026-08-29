@@ -7,8 +7,12 @@ from collections import Counter
 LABEL_NAMES = {0: "real", 1: "synthetic", 2: "tampered"}
 
 
-def load_sid_subset(images_per_label: int, seed: int = 4, buffer_size: int = 100):
+def load_sid_subset(images_per_label: int, seed: int = 4, buffer_size: int = 100, hf_token: str = None):
     # Lazy import keeps local-folder generation usable without Hugging Face.
+    import os
+    if hf_token is not None:
+        os.environ["HF_TOKEN"] = hf_token
+
     from datasets import load_dataset
 
     if images_per_label < 1:
