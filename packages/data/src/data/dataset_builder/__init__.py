@@ -1,4 +1,4 @@
 from .autoencoder import AutoencoderDatasetBuilder
-from .sid import load_sid_subset
+from .sid import iter_sid_subset, load_sid_subset
 
-__all__ = ["AutoencoderDatasetBuilder", "load_sid_subset"]
+__all__ = ["AutoencoderDatasetBuilder", "iter_sid_subset", "load_sid_subset"]

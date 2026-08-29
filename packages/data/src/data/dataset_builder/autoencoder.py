@@ -55,7 +55,7 @@ class AutoencoderDatasetBuilder:
 
                 # Editing this part to basically find the crop value and return the cropped clean image as final target
                 # The augmented target should contain the same crop as the input,
-# but none of the other corruptions.
+                # but none of the other corruptions.
                 augmented_target = clean_array
 
                 for step in record.parameters.get("steps", []):

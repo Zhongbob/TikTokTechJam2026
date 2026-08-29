@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
@@ -142,6 +143,53 @@ class ImageAugmenter:
         records = [record for _, record in results]
         output = np.stack(arrays) if len({array.shape for array in arrays}) == 1 else arrays
         return (output, records) if return_metadata else output
+
+    def iter_transform_images(
+        self,
+        images: Iterable[ImageInput],
+        num_augmentations: int = 6,
+        return_metadata: bool = False,
+        backend: str = "sequential",
+        num_workers: int | None = None,
+        prefetch: int | None = None,
+    ) -> Iterator:
+        """Stream transformed images in input order, one result at a time.
+
+        Behaves like :meth:`transform_images` but never materialises the whole
+        dataset: it consumes ``images`` lazily and yields either a single
+        ``np.ndarray`` per image, or ``(np.ndarray, AugmentationRecord)`` when
+        ``return_metadata`` is true. For the ``thread``/``process`` backends at
+        most ``prefetch`` items (default: ``num_workers`` or 4) are kept in
+        flight, bounding peak memory regardless of dataset size.
+        """
+        if backend not in {"sequential", "thread", "process"}:
+            raise ValueError("backend must be sequential, thread, or process")
+        if num_workers is not None and num_workers < 1:
+            raise ValueError("num_workers must be at least 1")
+
+        def emit(result):
+            array, record = result
+            return (array, record) if return_metadata else array
+
+        if backend == "sequential" or num_workers == 1:
+            for image in images:
+                yield emit(self.transform_one(image, num_augmentations))
+            return
+
+        window = prefetch if prefetch is not None else (num_workers or 4)
+        if window < 1:
+            raise ValueError("prefetch must be at least 1")
+        executor_type = ThreadPoolExecutor if backend == "thread" else ProcessPoolExecutor
+        pending: deque = deque()
+        with executor_type(max_workers=num_workers) as executor:
+            for image in images:
+                seed = int(self.rng.integers(0, np.iinfo(np.uint32).max, dtype=np.uint32))
+                payload = (image, self.output_size, seed, num_augmentations)
+                pending.append(executor.submit(_transform_worker, payload))
+                if len(pending) >= window:
+                    yield emit(pending.popleft().result())
+            while pending:
+                yield emit(pending.popleft().result())
 
 
 def _transform_worker(payload: tuple[ImageInput, tuple[int, int] | None, int, int]) -> tuple[np.ndarray, AugmentationRecord]:
