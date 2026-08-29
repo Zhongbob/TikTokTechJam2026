@@ -8,7 +8,7 @@ import os
 from image_io import find_images
 
 from data.augmentation import ImageAugmenter
-from data.datasets import AutoencoderDatasetBuilder, load_sid_subset
+from data.dataset_builder import AutoencoderDatasetBuilder, load_sid_subset
 
 
 def parse_size(value: str) -> tuple[int, int]:
