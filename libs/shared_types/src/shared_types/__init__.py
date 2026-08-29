@@ -2,6 +2,14 @@ from shared_types.augmentation import AugmentationRecord, ImageInput, SourceMeta
 from shared_types.dataset import DatasetSample
 from shared_types.detection import DetectionResult, EnsembleMemberResult
 from shared_types.interfaces import AutoencoderRestorer, EnsembleDetector
+from shared_types.training import (
+    AutoencoderTrainableModel,
+    ClassifierTrainableModel,
+    ImagePairSample,
+    LabeledImageSample,
+    TrainableModel,
+    TrainingResult,
+)
 from shared_types.transforms import (
     BLUR_SIGMAS,
     CENTER_CROP_FRACTION,
@@ -32,6 +40,12 @@ __all__ = [
     "EnsembleMemberResult",
     "AutoencoderRestorer",
     "EnsembleDetector",
+    "AutoencoderTrainableModel",
+    "ClassifierTrainableModel",
+    "ImagePairSample",
+    "LabeledImageSample",
+    "TrainableModel",
+    "TrainingResult",
     "BLUR_SIGMAS",
     "CENTER_CROP_FRACTION",
     "COLOR_JITTER_RANGE",
