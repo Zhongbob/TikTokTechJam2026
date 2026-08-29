@@ -28,9 +28,9 @@ from shared_types.augmentation import AugmentationRecord, SourceMetadata
 class LabeledImageSample:
     """One (image, label) training example for a classifier-style model.
 
-    Shaped to match `data.datasets.load_sid_subset()`'s output 1:1 — see
-    `data.datasets.to_labeled_samples()` to convert that function's
-    (images, metadata) pair into a list of these.
+    Shaped to match `data.dataset_builder.load_sid_subset()`'s output 1:1 —
+    see `data.dataset_builder.to_labeled_samples()` to convert that
+    function's (images, metadata) pair into a list of these.
     """
 
     image: Image.Image
@@ -42,9 +42,9 @@ class ImagePairSample:
     """One (input, target) training pair for an image-restoration model.
 
     Shaped to match the manifest.json entries written by
-    `data.datasets.AutoencoderDatasetBuilder.build()` — see
-    `data.datasets.load_manifest_as_samples()` to load a built dataset
-    directory straight into a list of these.
+    `data.dataset_builder.AutoencoderDatasetBuilder.build()` — see
+    `data.dataset_builder.load_manifest_as_samples()` to load a built
+    dataset directory straight into a list of these.
     """
 
     input_image: Image.Image
@@ -128,6 +128,6 @@ AutoencoderTrainableModel: TypeAlias = TrainableModel[ImagePairSample]
 #     still expose the same simple `.train(samples)` signature to Colab.
 #   - Fine-tuning a pretrained classifier (ensemble / our_classifier): the
 #     Hugging Face `transformers.Trainer` pairs naturally with the `datasets`
-#     library already used by `data.datasets.load_sid_subset()`.
+#     library already used by `data.dataset_builder.load_sid_subset()`.
 # Pick whichever fits inside your `train()` method; nothing above assumes
 # either.

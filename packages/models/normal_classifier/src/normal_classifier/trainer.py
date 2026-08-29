@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable
 
 from shared_types import ClassifierTrainableModel, LabeledImageSample, TrainingResult
 
@@ -27,8 +27,14 @@ def _label_folder_name(sample: LabeledImageSample) -> str:
     return _CLASS_NAMES[int(sample.metadata["binary_aigc_label"])]
 
 
-def _export_to_class_folders(samples: Sequence[LabeledImageSample], split_dir: Path) -> None:
-    """Writes samples out as `split_dir/<class_name>/NNNNNN.jpg`."""
+def _export_to_class_folders(samples: Iterable[LabeledImageSample], split_dir: Path) -> int:
+    """Writes samples out as `split_dir/<class_name>/NNNNNN.jpg`.
+
+    Takes `samples` in a single pass and writes+discards each image as it
+    goes — safe to call with a lazy generator (e.g. `iter_sid_subset()`)
+    without ever holding the whole set in memory. Returns the total count
+    written.
+    """
     counts: dict[str, int] = {}
     for sample in samples:
         class_name = _label_folder_name(sample)
@@ -37,6 +43,7 @@ def _export_to_class_folders(samples: Sequence[LabeledImageSample], split_dir: P
         index = counts.get(class_name, 0)
         sample.image.convert("RGB").save(folder / f"{index:06d}.jpg", quality=95)
         counts[class_name] = index + 1
+    return sum(counts.values())
 
 
 def _split_train_val(
@@ -66,17 +73,17 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
     """Extend/instantiate this in your Colab notebook:
 
         from normal_classifier import NormalClassifierTrainer
-        from data.datasets import load_sid_subset, to_labeled_samples
+        from data.dataset_builder import iter_sid_subset, load_sid_subset, to_labeled_samples
 
-        train_images, train_meta = load_sid_subset(images_per_label=1000, split="train")
+        # Large, single-use training pull: iter_sid_subset() streams straight
+        # through train() without ever holding the whole set in memory.
+        train_samples = iter_sid_subset(images_per_label=1000, split="train")
+        # Small, reused-more-than-once validation pull: fine to materialize.
         val_images, val_meta = load_sid_subset(images_per_label=200, split="validation")
+        val_samples = to_labeled_samples(val_images, val_meta)
 
         trainer = NormalClassifierTrainer()
-        result = trainer.train(
-            to_labeled_samples(train_images, train_meta),
-            val_samples=to_labeled_samples(val_images, val_meta),
-            epochs=100,
-        )
+        result = trainer.train(train_samples, val_samples=val_samples, epochs=100)
         trainer.save("normal_classifier.pt")
     """
 
@@ -105,17 +112,25 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
     ) -> TrainingResult:
         from ultralytics import YOLO
 
-        samples = list(samples)
-        if not samples:
-            raise ValueError("samples must not be empty")
-        if val_samples is None:
-            samples, val_samples = _split_train_val(samples, val_fraction)
-        else:
-            val_samples = list(val_samples)
-
         output_dir = Path(output_dir)
-        _export_to_class_folders(samples, output_dir / "train")
-        _export_to_class_folders(val_samples, output_dir / "val")
+        if val_samples is None:
+            # The stratified auto-split needs to see every sample's class
+            # before it can decide where anything goes, so this path (only)
+            # requires materializing `samples` into memory first. Pass
+            # val_samples explicitly (e.g. from a separate iter_sid_subset()
+            # call) to avoid this for a large, single-use training pull.
+            samples = list(samples)
+            if not samples:
+                raise ValueError("samples must not be empty")
+            samples, val_samples = _split_train_val(samples, val_fraction)
+
+        # Single pass over each iterable, writing+discarding as we go — safe
+        # to call with lazy generators (e.g. iter_sid_subset()) without ever
+        # holding the full train/val sets in memory at once.
+        train_count = _export_to_class_folders(samples, output_dir / "train")
+        val_count = _export_to_class_folders(val_samples, output_dir / "val")
+        if train_count == 0:
+            raise ValueError("samples must not be empty")
 
         self._model = YOLO(self.base_weights)
         results = self._model.train(
@@ -141,7 +156,7 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
             epochs_completed=int(epochs_completed) + 1 if epochs_completed is not None else epochs,
             metrics={k: float(v) for k, v in results_dict.items() if isinstance(v, (int, float))},
             checkpoint_path=str(checkpoint) if checkpoint else None,
-            notes=f"Trained on {len(samples)} samples, validated on {len(val_samples)}.",
+            notes=f"Trained on {train_count} samples, validated on {val_count}.",
         )
 
     # --- testing ---------------------------------------------------------
@@ -153,7 +168,8 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
         output_dir = Path(kwargs.pop("output_dir", "yolo_eval_dataset"))
         # Ultralytics' classification val() reads the same directory layout
         # as train(); a directory holding only a val/ split is sufficient.
-        _export_to_class_folders(list(samples), output_dir / "val")
+        # Single pass, streaming-safe like train()'s export above.
+        _export_to_class_folders(samples, output_dir / "val")
         metrics = self._model.val(data=str(output_dir), **kwargs)
 
         results_dict = getattr(metrics, "results_dict", None) or {}
