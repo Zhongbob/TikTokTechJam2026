@@ -12,7 +12,7 @@ LABEL_NAMES = {0: "real", 1: "synthetic", 2: "tampered"}
 
 
 def iter_sid_subset(
-    images_per_label: int, seed: int = 4, buffer_size: int = 100, hf_token: str = None
+    images_per_label: int, seed: int = 4, buffer_size: int = 100, split: str = "train", hf_token: str = None
 ) -> Iterator[tuple["object", dict]]:
     """Yield ``(image, metadata)`` pairs one at a time from a balanced SID-Set subset.
 
