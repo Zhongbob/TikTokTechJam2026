@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 
 from image_io import find_images
 
 from data.augmentation import ImageAugmenter
-from data.dataset_builder import AutoencoderDatasetBuilder, load_sid_subset
+from data.dataset_builder import AutoencoderDatasetBuilder, iter_sid_subset
 
 
 def parse_size(value: str) -> tuple[int, int]:
@@ -42,19 +43,34 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    metadata = None
-    if args.source == "local":
-        images = find_images(args.input, recursive=not args.no_recursive)
-    else:
-        images, metadata = load_sid_subset(args.images_per_label, args.seed, args.shuffle_buffer, args.hf_token)
-
     augmenter = ImageAugmenter(output_size=args.output_size, seed=args.seed)
     builder = AutoencoderDatasetBuilder(augmenter)
-    builder.build(
-        images=images, output_dir=args.output, source_metadata=metadata,
-        num_augmentations=args.num_augmentations, backend=args.backend,
-        num_workers=args.workers, batch_size=args.batch_size,
-    )
+
+    if args.source == "local":
+        # A list of file paths is cheap to hold; use the parallel batch path.
+        images = find_images(args.input, recursive=not args.no_recursive)
+        builder.build(
+            images=images, output_dir=args.output, source_metadata=None,
+            num_augmentations=args.num_augmentations, backend=args.backend,
+            num_workers=args.workers, batch_size=args.batch_size,
+        )
+    else:
+        # Stream SID-Set straight through the builder -- the subset is never
+        # materialised, only one decoded image is live at a time. tee() keeps
+        # the image/metadata streams in lockstep with a one-item buffer.
+        pairs = (
+            (sample.image, sample.metadata)
+            for sample in iter_sid_subset(
+                args.images_per_label, args.seed, args.shuffle_buffer, hf_token=args.hf_token
+            )
+        )
+        image_pairs, metadata_pairs = itertools.tee(pairs, 2)
+        builder.build_stream(
+            images=(pair[0] for pair in image_pairs),
+            output_dir=args.output,
+            source_metadata=(pair[1] for pair in metadata_pairs),
+            num_augmentations=args.num_augmentations,
+        )
 
 
 if __name__ == "__main__":

@@ -73,18 +73,21 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
     """Extend/instantiate this in your Colab notebook:
 
         from normal_classifier import NormalClassifierTrainer
-        from data.dataset_builder import iter_sid_subset, load_sid_subset, to_labeled_samples
+        from data.dataset_builder import iter_sid_subset, sid_subset_factory
 
         # Large, single-use training pull: iter_sid_subset() streams straight
         # through train() without ever holding the whole set in memory.
         train_samples = iter_sid_subset(images_per_label=1000, split="train")
-        # Small, reused-more-than-once validation pull: fine to materialize.
-        val_images, val_meta = load_sid_subset(images_per_label=200, split="validation")
-        val_samples = to_labeled_samples(val_images, val_meta)
+        # Validation set is iterated more than once (train's val pass,
+        # evaluate()); a factory re-streams it instead of materializing it.
+        make_val = sid_subset_factory(images_per_label=200, split="validation")
 
         trainer = NormalClassifierTrainer()
-        result = trainer.train(train_samples, val_samples=val_samples, epochs=100)
+        result = trainer.train(train_samples, val_samples=make_val(), epochs=100)
         trainer.save("normal_classifier.pt")
+
+    Or just run this module for a small streamed smoke test:
+        python -m normal_classifier.trainer --train-per-label 25 --epochs 5
     """
 
     name = "normal-classifier-yolo"
@@ -199,3 +202,85 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
         instance = cls(base_weights=str(path))
         instance._model = YOLO(str(path))
         return instance
+
+
+# --- CLI smoke run ------------------------------------------------------
+# `python -m normal_classifier.trainer` (or running this file directly)
+# streams a small balanced SID-Set subset straight from Hugging Face via the
+# `data` library and does a short end-to-end train + evaluate, printing the
+# results. Sizes and epochs are all flags so it stays quick by default.
+
+
+def _build_cli_parser() -> "argparse.ArgumentParser":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Stream a small SID-Set subset and run a short train + evaluate of the baseline classifier.",
+    )
+    parser.add_argument("--train-per-label", type=int, default=25,
+                        help="Training images streamed per SID label (real/synthetic/tampered).")
+    parser.add_argument("--test-per-label", type=int, default=10,
+                        help="Held-out images streamed per SID label for the evaluate() pass.")
+    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--device", default="cpu", help="'cpu', '0', 'cuda:0', ...")
+    parser.add_argument("--seed", type=int, default=4)
+    parser.add_argument("--buffer-size", type=int, default=100,
+                        help="iter_sid_subset() streaming-shuffle window.")
+    parser.add_argument("--output-dir", default="sid_yolo_smoke")
+    parser.add_argument("--base-weights", default="yolo26n-cls.pt")
+    parser.add_argument("--hf-token", default=None)
+    return parser
+
+
+def _run_cli(argv: list[str] | None = None) -> None:
+    from data.dataset_builder import iter_sid_subset, sid_subset_factory
+
+    args = _build_cli_parser().parse_args(argv)
+
+    print(
+        f"Streaming SID-Set: {args.train_per_label}/label train, "
+        f"{args.test_per_label}/label test | epochs={args.epochs} batch={args.batch} device={args.device}"
+    )
+
+    # Training pull: a single-use stream, consumed once by train() as it
+    # writes each image to disk -- never more than one decoded image in RAM.
+    train_samples = iter_sid_subset(
+        args.train_per_label, seed=args.seed, buffer_size=args.buffer_size,
+        split="train", hf_token=args.hf_token,
+    )
+    # Test pull: iterated by evaluate() -- a factory hands back a fresh stream
+    # each call instead of materialising the set.
+    make_test_samples = sid_subset_factory(
+        args.test_per_label, seed=args.seed, buffer_size=args.buffer_size,
+        split="validation", hf_token=args.hf_token,
+    )
+
+    trainer = NormalClassifierTrainer(base_weights=args.base_weights, image_size=args.image_size)
+    result = trainer.train(
+        train_samples,
+        val_samples=make_test_samples(),
+        output_dir=args.output_dir,
+        epochs=args.epochs,
+        batch=args.batch,
+        device=args.device,
+    )
+
+    print("\n=== Training result ===")
+    print(f"epochs completed : {result.epochs_completed}")
+    print(f"checkpoint       : {result.checkpoint_path}")
+    print(f"notes            : {result.notes}")
+    if result.metrics:
+        print("metrics:")
+        for key, value in result.metrics.items():
+            print(f"  {key}: {value:.4f}")
+
+    metrics = trainer.evaluate(make_test_samples(), output_dir=f"{args.output_dir}_eval")
+    print("\n=== Held-out evaluation ===")
+    for key, value in metrics.items():
+        print(f"  {key}: {value:.4f}")
+
+
+if __name__ == "__main__":
+    _run_cli()
