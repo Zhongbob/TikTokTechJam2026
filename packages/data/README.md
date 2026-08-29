@@ -20,7 +20,7 @@ packages/data/
 └── src/data/
     ├── main.py
     ├── augmentation/image_augmenter.py    # imports shared_types, image_io
-    └── datasets/
+    └── dataset_builder/
         ├── autoencoder.py                 # imports shared_types, data.augmentation
         └── sid.py
 ```
