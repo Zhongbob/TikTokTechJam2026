@@ -170,10 +170,22 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
             raise RuntimeError("Call train() or load() before evaluate()")
 
         output_dir = Path(kwargs.pop("output_dir", "yolo_eval_dataset"))
-        # Ultralytics' classification val() reads the same directory layout
-        # as train(); a directory holding only a val/ split is sufficient.
-        # Single pass, streaming-safe like train()'s export above.
-        _export_to_class_folders(samples, output_dir / "val")
+        # Single pass over `samples`, streaming-safe like train()'s export.
+        val_dir = output_dir / "val"
+        val_count = _export_to_class_folders(samples, val_dir)
+        if val_count == 0:
+            raise ValueError("samples must not be empty")
+
+        # Ultralytics' check_cls_dataset() refuses a dataset root whose train/
+        # split is missing or empty -- even for val(), which only scores the
+        # val split. Mirror val/ into train/ so the check passes; val() still
+        # evaluates val/ only.
+        train_dir = output_dir / "train"
+        if train_dir.exists():
+            shutil.rmtree(train_dir)
+        shutil.copytree(val_dir, train_dir)
+
+        kwargs.setdefault("split", "val")
         metrics = self._model.val(data=str(output_dir), **kwargs)
 
         results_dict = getattr(metrics, "results_dict", None) or {}
