@@ -26,7 +26,7 @@ class ImageAugmenter:
         "jpeg_compression", "gaussian_blur", "resize",
         "gaussian_noise", "color_jitter", "center_crop",
     )
-    CENTER_CROP_RANGE = (0.3, 0.8)
+    CENTER_CROP_RANGE = (0.8, 1)
 
 
     def __init__(self, output_size: tuple[int, int] | None = None, seed: int | None = 42) -> None:
