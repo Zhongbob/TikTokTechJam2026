@@ -3,6 +3,9 @@ name = "TikTokTechJamBums"
 version = "0.1.0"
 description = "Bums"
 requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.43.83",
+]
 
 [tool.uv.workspace]
 members = [
