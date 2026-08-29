@@ -52,15 +52,43 @@ class AutoencoderDatasetBuilder:
                 index = batch_start + offset
                 clean, source = self.augmenter.load_rgb(image)
                 clean_array = np.asarray(clean, dtype=np.uint8)
+
+                # Editing this part to basically find the crop value and return the cropped clean image as final target
+                # The augmented target should contain the same crop as the input,
+# but none of the other corruptions.
+                augmented_target = clean_array
+
+                for step in record.parameters.get("steps", []):
+                    if step["transform"] == "center_crop":
+                        crop_ratio = step["parameters"]["crop_ratio"]
+                        cropped_clean, _ = self.augmenter.center_crop(
+                            clean,
+                            crop_ratio=crop_ratio,
+                        )
+                        augmented_target = np.asarray(
+                            cropped_clean, dtype=np.uint8)
+                        break
+
                 pairs = (
-                    ("clean", clean_array, AugmentationRecord(source, "identity", {})),
-                    ("augmented", augmented_array, record),
+                    (
+                        "clean",
+                        clean_array,
+                        clean_array,
+                        AugmentationRecord(source, "identity", {}),
+                    ),
+                    (
+                        "augmented",
+                        augmented_array,
+                        augmented_target,
+                        record,
+                    ),
                 )
-                for variant, input_array, applied in pairs:
+
+                for variant, input_array, target_array, applied in pairs:
                     filename = f"{index:06d}_{variant}.png"
                     input_path, target_path = inputs_dir / filename, targets_dir / filename
                     Image.fromarray(input_array).save(input_path)
-                    Image.fromarray(clean_array).save(target_path)
+                    Image.fromarray(target_array).save(target_path)
                     entry = {
                         "source_index": index, "source": source, "variant": variant,
                         "input_path": str(input_path), "target_path": str(target_path),
@@ -73,7 +101,8 @@ class AutoencoderDatasetBuilder:
 
         with (output_dir / "manifest.json").open("w", encoding="utf-8") as file:
             json.dump(manifest, file, indent=2)
-        print(f"Created {len(manifest)} pairs in {time.perf_counter() - start:.2f}s at {output_dir}")
+        print(
+            f"Created {len(manifest)} pairs in {time.perf_counter() - start:.2f}s at {output_dir}")
         return manifest
 
 
