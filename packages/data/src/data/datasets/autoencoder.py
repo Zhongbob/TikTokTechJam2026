@@ -10,7 +10,7 @@ from typing import Sequence
 import numpy as np
 from PIL import Image
 
-from shared_types import AugmentationRecord, ImageInput
+from shared_types import AugmentationRecord, ImageInput, ImagePairSample
 
 from data.augmentation import ImageAugmenter
 
@@ -75,3 +75,29 @@ class AutoencoderDatasetBuilder:
             json.dump(manifest, file, indent=2)
         print(f"Created {len(manifest)} pairs in {time.perf_counter() - start:.2f}s at {output_dir}")
         return manifest
+
+
+def load_manifest_as_samples(output_dir: str | Path) -> list[ImagePairSample]:
+    """Loads a directory built by `AutoencoderDatasetBuilder.build()` into the
+    shared `ImagePairSample` type that `TrainableModel.train()`
+    implementations (e.g. the autoencoder) expect.
+
+        builder.build(images, "outputs/local")
+        samples = load_manifest_as_samples("outputs/local")
+        trainer.train(samples)
+    """
+    output_dir = Path(output_dir)
+    with (output_dir / "manifest.json").open(encoding="utf-8") as file:
+        manifest = json.load(file)
+
+    samples = []
+    for entry in manifest:
+        with Image.open(entry["input_path"]) as opened:
+            input_image = opened.convert("RGB").copy()
+        with Image.open(entry["target_path"]) as opened:
+            target_image = opened.convert("RGB").copy()
+        record = AugmentationRecord(
+            source=entry["source"], transform=entry["transform"], parameters=entry["parameters"]
+        )
+        samples.append(ImagePairSample(input_image=input_image, target_image=target_image, record=record))
+    return samples

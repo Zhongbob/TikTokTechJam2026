@@ -47,7 +47,7 @@ The folder is searched recursively for `.png`, `.jpg`, and `.jpeg` files.
 Change `--images-per-label` to control how many images are selected from each SID label:
 
 ```bash
-uv run python -m data.main --output outputs/sid --num-augmentations 6 --backend process --workers 4 sid --images-per-label 100
+uv run src/data/main.py --output ../../images/output local --input ../../images/input
 ```
 
 This streams the source images into memory and does not save separate copies of them. With three SID labels and `100` images per label, the result contains `300` source images and `600` autoencoder pairs.
