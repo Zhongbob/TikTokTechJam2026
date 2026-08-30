@@ -76,7 +76,7 @@ subset). Run as a module so its internal `data.*` imports resolve:
 ```powershell
 cd packages/data
 uv sync
-uv run python -m data.main --output outputs/local --num-augmentations 6 --backend process --workers 4 local --input path/to/images
+uv run src/data/main.py --output ../../images/output local --input ../../images/input
 ```
 
 or, streaming a balanced subset from the SID-Set dataset:

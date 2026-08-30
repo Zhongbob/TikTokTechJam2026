@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
@@ -92,19 +93,35 @@ class ImageAugmenter:
             return self.center_crop(image, crop_ratio = float(self.rng.uniform(*self.CENTER_CROP_RANGE)))
         raise ValueError(f"Unknown transform: {transform}")
 
-    def transform_one(self, image: ImageInput, num_augmentations: int = 6) -> tuple[np.ndarray, AugmentationRecord]:
-        if not 1 <= num_augmentations <= len(self.TRANSFORMS):
-            raise ValueError("num_augmentations must be between 1 and 6")
+    def _resolve_num_augmentations(self, num_augmentations: int | tuple[int, int]) -> int:
+        """Accept a fixed count or an inclusive ``(min, max)`` range; when a
+        range is given, draw a per-call count uniformly from it so different
+        images get random-length transform chains."""
+        if isinstance(num_augmentations, int):
+            low = high = num_augmentations
+        else:
+            low, high = num_augmentations
+        if not 1 <= low <= high <= len(self.TRANSFORMS):
+            raise ValueError(
+                "num_augmentations must be an int in 1..6, or a (min, max) pair within that range"
+            )
+        return int(self.rng.integers(low, high + 1))
+
+    def transform_one(
+        self, image: ImageInput, num_augmentations: int | tuple[int, int] = 6
+    ) -> tuple[np.ndarray, AugmentationRecord]:
+        count = self._resolve_num_augmentations(num_augmentations)
         transformed, source = self.load_rgb(image)
         order = list(self.TRANSFORMS)
         self.rng.shuffle(order)
-        selected = order[:num_augmentations]
+        selected = order[:count]
         steps = []
         for name in selected:
             transformed, parameters = self._apply_random_parameters(transformed, name)
             steps.append({"transform": name, "parameters": parameters})
-        record = AugmentationRecord(source, f"random_{num_augmentations}_of_6", {
-            "num_augmentations": num_augmentations,
+        record = AugmentationRecord(source, f"random_{count}_of_6", {
+            "num_augmentations": count,
+            "requested_num_augmentations": num_augmentations,
             "available_transforms": list(self.TRANSFORMS),
             "order": selected,
             "steps": steps,
@@ -114,7 +131,7 @@ class ImageAugmenter:
     def transform_images(
         self,
         images: Sequence[ImageInput],
-        num_augmentations: int = 6,
+        num_augmentations: int | tuple[int, int] = 6,
         return_metadata: bool = False,
         backend: str = "sequential",
         num_workers: int | None = None,
@@ -143,8 +160,57 @@ class ImageAugmenter:
         output = np.stack(arrays) if len({array.shape for array in arrays}) == 1 else arrays
         return (output, records) if return_metadata else output
 
+    def iter_transform_images(
+        self,
+        images: Iterable[ImageInput],
+        num_augmentations: int | tuple[int, int] = 6,
+        return_metadata: bool = False,
+        backend: str = "sequential",
+        num_workers: int | None = None,
+        prefetch: int | None = None,
+    ) -> Iterator:
+        """Stream transformed images in input order, one result at a time.
 
-def _transform_worker(payload: tuple[ImageInput, tuple[int, int] | None, int, int]) -> tuple[np.ndarray, AugmentationRecord]:
+        Behaves like :meth:`transform_images` but never materialises the whole
+        dataset: it consumes ``images`` lazily and yields either a single
+        ``np.ndarray`` per image, or ``(np.ndarray, AugmentationRecord)`` when
+        ``return_metadata`` is true. For the ``thread``/``process`` backends at
+        most ``prefetch`` items (default: ``num_workers`` or 4) are kept in
+        flight, bounding peak memory regardless of dataset size.
+        """
+        if backend not in {"sequential", "thread", "process"}:
+            raise ValueError("backend must be sequential, thread, or process")
+        if num_workers is not None and num_workers < 1:
+            raise ValueError("num_workers must be at least 1")
+
+        def emit(result):
+            array, record = result
+            return (array, record) if return_metadata else array
+
+        if backend == "sequential" or num_workers == 1:
+            for image in images:
+                yield emit(self.transform_one(image, num_augmentations))
+            return
+
+        window = prefetch if prefetch is not None else (num_workers or 4)
+        if window < 1:
+            raise ValueError("prefetch must be at least 1")
+        executor_type = ThreadPoolExecutor if backend == "thread" else ProcessPoolExecutor
+        pending: deque = deque()
+        with executor_type(max_workers=num_workers) as executor:
+            for image in images:
+                seed = int(self.rng.integers(0, np.iinfo(np.uint32).max, dtype=np.uint32))
+                payload = (image, self.output_size, seed, num_augmentations)
+                pending.append(executor.submit(_transform_worker, payload))
+                if len(pending) >= window:
+                    yield emit(pending.popleft().result())
+            while pending:
+                yield emit(pending.popleft().result())
+
+
+def _transform_worker(
+    payload: tuple[ImageInput, tuple[int, int] | None, int, int | tuple[int, int]],
+) -> tuple[np.ndarray, AugmentationRecord]:
     """Top-level worker required by Python multiprocessing."""
     image, output_size, seed, num_augmentations = payload
     return ImageAugmenter(output_size, seed).transform_one(image, num_augmentations)

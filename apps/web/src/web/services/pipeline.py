@@ -8,6 +8,7 @@ from shared_types.detection import DetectionResult
 from shared_types.transforms import TransformPipeline
 
 from web.services.factory import get_detector, get_restorer
+from web.services.methods import NORMAL_CLASSIFIER, TRANSFORM_REVERSAL
 from web.services.transforms import apply_transform_pipeline
 
 
@@ -26,6 +27,7 @@ class PipelineResult:
     augmentation_record: AugmentationRecord
     detection_result: DetectionResult
     restorer_is_placeholder: bool
+    method: str = TRANSFORM_REVERSAL
 
 
 def build_augmentation_record(source_label: str, pipeline: TransformPipeline) -> AugmentationRecord:
@@ -46,16 +48,33 @@ def build_augmentation_record(source_label: str, pipeline: TransformPipeline) ->
     )
 
 
-def run_pipeline(image: Image.Image, pipeline: TransformPipeline, source_label: str) -> PipelineResult:
+def run_pipeline(
+    image: Image.Image,
+    pipeline: TransformPipeline,
+    source_label: str,
+    method: str = TRANSFORM_REVERSAL,
+) -> PipelineResult:
     transformed_image = apply_transform_pipeline(image, pipeline)
+    augmentation_record = build_augmentation_record(source_label, pipeline)
 
+    if method == NORMAL_CLASSIFIER:
+        # No restoration stage — the classifier runs on the transformed image.
+        detection_result = get_detector(NORMAL_CLASSIFIER).predict(transformed_image)
+        return PipelineResult(
+            original_image=image,
+            transformed_image=transformed_image,
+            restored_image=transformed_image,
+            transform_pipeline=pipeline,
+            augmentation_record=augmentation_record,
+            detection_result=detection_result,
+            restorer_is_placeholder=False,
+            method=NORMAL_CLASSIFIER,
+        )
+
+    # transform_reversal: restore first, then detect on the restored image.
     restorer = get_restorer()
     restored_image = restorer.restore(transformed_image)
-
-    detector = get_detector()
-    detection_result = detector.predict(restored_image)
-
-    augmentation_record = build_augmentation_record(source_label, pipeline)
+    detection_result = get_detector(TRANSFORM_REVERSAL).predict(restored_image)
 
     return PipelineResult(
         original_image=image,
@@ -65,4 +84,5 @@ def run_pipeline(image: Image.Image, pipeline: TransformPipeline, source_label: 
         augmentation_record=augmentation_record,
         detection_result=detection_result,
         restorer_is_placeholder=restorer.is_placeholder,
+        method=TRANSFORM_REVERSAL,
     )

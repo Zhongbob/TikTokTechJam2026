@@ -8,7 +8,7 @@ from typing import Any, TypeAlias, TypedDict
 import numpy as np
 from PIL import Image
 
-ImageInput: TypeAlias = str | Path | Image.Image | np.ndarray
+ImageInput: TypeAlias = str | Path | Image.Image | np.ndarray | bytes
 
 
 @dataclass(frozen=True)

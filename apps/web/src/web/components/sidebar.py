@@ -23,6 +23,21 @@ from shared_types.transforms import (
 )
 
 from web.services.dataset import load_sample_manifest, load_sample_image
+from web.services.methods import METHOD_DESCRIPTIONS, METHOD_LABELS, METHODS
+
+
+def render_method_picker() -> str:
+    """Lets the user choose between the 'Normal Classifier' and 'Transform
+    Reversal' detection methods. Returns the selected method key."""
+    st.sidebar.subheader("Detection method")
+    method = st.sidebar.radio(
+        "Detection method",
+        METHODS,
+        format_func=lambda m: METHOD_LABELS[m],
+        label_visibility="collapsed",
+    )
+    st.sidebar.caption(METHOD_DESCRIPTIONS[method])
+    return method
 
 
 def render_image_source_picker() -> tuple[Image.Image, str] | None:
