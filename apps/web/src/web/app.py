@@ -10,8 +10,21 @@ from web.services.dataset import (
     pick_random_sample,
     pick_random_transform_pipeline,
 )
+from web.services.methods import METHOD_LABELS
 from web.services.pipeline import run_pipeline
 from web.services.transforms import apply_transform_pipeline
+
+
+def _run_and_store(image, pipeline, source_label: str, method: str) -> None:
+    """Run one pipeline pass and stash the result, surfacing model-loading
+    problems (missing checkpoint, package not installed) as a friendly error
+    rather than a raw traceback."""
+    try:
+        result = run_pipeline(image, pipeline, source_label, method)
+    except (FileNotFoundError, RuntimeError) as error:
+        st.error(f"Couldn't run **{METHOD_LABELS[method]}**: {error}")
+        return
+    state.set_pipeline_result(result)
 
 
 def render_app() -> None:
@@ -19,12 +32,11 @@ def render_app() -> None:
 
     st.title("AI-Generated Image Detection")
     st.caption(
-        "Upload an image, apply one or more real-world-style transformations, and see how the "
-        "autoencoder + ensemble detector pipeline responds. "
-        "**The restoration and detection models are placeholders** until the real "
-        "models are trained — see the warnings on the results below."
+        "Pick a detection method, choose an image, apply one or more "
+        "real-world-style transformations, and see how the detector responds."
     )
 
+    method = sidebar.render_method_picker()
     image_choice = sidebar.render_image_source_picker()
     transform_pipeline = sidebar.render_transform_pipeline_controls()
     run_clicked = sidebar.render_run_button()
@@ -43,8 +55,7 @@ def render_app() -> None:
             sample = pick_random_sample(manifest)
             image = load_sample_image(sample)
             random_pipeline = pick_random_transform_pipeline()
-            result = run_pipeline(image, random_pipeline, f"sample:{sample.img_id}")
-            state.set_pipeline_result(result)
+            _run_and_store(image, random_pipeline, f"sample:{sample.img_id}", method)
         else:
             st.sidebar.warning("No sample dataset images available to randomize from.")
     elif run_clicked:
@@ -52,8 +63,7 @@ def render_app() -> None:
             st.sidebar.error("Choose or upload an image first.")
         else:
             image, source_label = image_choice
-            result = run_pipeline(image, transform_pipeline, source_label)
-            state.set_pipeline_result(result)
+            _run_and_store(image, transform_pipeline, source_label, method)
 
     pipeline_result = state.get_pipeline_result()
     if pipeline_result is None:

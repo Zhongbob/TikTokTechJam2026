@@ -19,6 +19,8 @@ from shared_types.interfaces import EnsembleDetector
 
 # Same mapping the trainer exports with: 0 = real, 1 = AI-generated/tampered.
 _CLASS_LABELS = ("real", "ai_generated")
+SCRIPT_DIR = Path(__file__).resolve().parent
+
 
 
 def _save_confusion_matrix(confusion: list[list[int]], output_dir: Path, title: str) -> Path:
@@ -75,6 +77,9 @@ class NormalClassifierDetector(EnsembleDetector):
     name = "normal-classifier-yolo"
     is_placeholder = False
 
+    #: Checkpoint shipped in this package, loaded by :meth:`use_default`.
+    DEFAULT_CHECKPOINT = SCRIPT_DIR.parent / "weights" / "normal_classifier_augmented.pt"
+
     def __init__(self, model: Any) -> None:
         self._model = model  # an ultralytics.YOLO instance
 
@@ -83,6 +88,18 @@ class NormalClassifierDetector(EnsembleDetector):
         from ultralytics import YOLO
 
         return cls(YOLO(str(path)))
+
+    @classmethod
+    def use_default(cls) -> "NormalClassifierDetector":
+        """Load the checkpoint bundled with this package
+        (``src/weights/normal_classifier_augmented.pt``)."""
+        checkpoint = cls.DEFAULT_CHECKPOINT
+        if not checkpoint.is_file():
+            raise FileNotFoundError(
+                f"Default checkpoint not found at {checkpoint}. Train one with "
+                "NormalClassifierTrainer and save it there, or call from_checkpoint(path)."
+            )
+        return cls.from_checkpoint(checkpoint)
 
     def predict(self, image: Image.Image, **kwargs: Any) -> DetectionResult:
         kwargs.setdefault("verbose", False)
@@ -175,3 +192,5 @@ class NormalClassifierDetector(EnsembleDetector):
             print(f"Confusion matrix written to {path}")
 
         return metrics
+
+    

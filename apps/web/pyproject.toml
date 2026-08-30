@@ -9,6 +9,7 @@ dependencies = [
     "pillow>=10.0",
     "numpy>=1.26",
     "shared_types",
+    "normal_classifier",
 ]
 
 [dependency-groups]
@@ -23,3 +24,4 @@ packages = ["src/web"]
 
 [tool.uv.sources]
 shared_types = { workspace = true }
+normal_classifier = { workspace = true }
