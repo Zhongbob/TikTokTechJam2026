@@ -10,13 +10,17 @@ can be dropped straight in as a real detector once a checkpoint exists.
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
 from PIL import Image
 from shared_types import LabeledImageSample
 from shared_types.detection import DetectionResult, EnsembleMemberResult
 from shared_types.interfaces import EnsembleDetector
+
+#: Base architecture used to host a bare state_dict loaded from a .pth file.
+DEFAULT_BASE_MODEL = "yolo26n-cls.pt"
 
 # Same mapping the trainer exports with: 0 = real, 1 = AI-generated/tampered.
 _CLASS_LABELS = ("real", "ai_generated")
@@ -152,6 +156,102 @@ def _save_confusion_matrix(confusion: list[list[int]], output_dir: Path, title: 
     return path
 
 
+def _names_map(class_names: Sequence[str] | dict[int, str]) -> dict[int, str]:
+    if isinstance(class_names, dict):
+        return {int(k): str(v) for k, v in class_names.items()}
+    return {i: str(n) for i, n in enumerate(class_names)}
+
+
+def _best_state_dict(target_keys: set[str], state: dict[str, Any]) -> dict[str, Any]:
+    """Pick the `model.` prefixing that best matches the target module's keys.
+
+    Other people's dumps variously keep, drop, or add a leading ``model.`` (and
+    sometimes ``module.`` from DataParallel); try each and keep the best overlap.
+    """
+    stripped = {k[len("module."):] if k.startswith("module.") else k: v for k, v in state.items()}
+    candidates = {
+        "as-is": stripped,
+        "drop model.": {k[len("model."):]: v for k, v in stripped.items() if k.startswith("model.")},
+        "add model.": {f"model.{k}": v for k, v in stripped.items()},
+    }
+    best_label, best = "as-is", stripped
+    best_score = len(target_keys & set(stripped))
+    for label, sd in candidates.items():
+        score = len(target_keys & set(sd))
+        if score > best_score:
+            best_label, best, best_score = label, sd, score
+    return best
+
+
+def load_yolo_model(
+    path: str | Path,
+    *,
+    base_model: str | Path = DEFAULT_BASE_MODEL,
+    class_names: Sequence[str] | dict[int, str] | None = None,
+) -> Any:
+    """Load an Ultralytics ``YOLO`` from ``path``, accepting ``.pt`` **or**
+    ``.pth`` (or any other ``torch.save`` payload).
+
+    - ``.pt``: Ultralytics' own format — loaded directly.
+    - a full Ultralytics checkpoint under a non-``.pt`` name: re-wrapped as
+      ``.pt`` and loaded.
+    - a bare ``state_dict``: loaded (``strict=False``) into ``base_model``'s
+      architecture. Pass ``class_names`` so the classes can be named (or use a
+      numeric ``positive_class`` on the detector), and ``base_model`` if the
+      weights aren't a ``yolo26n-cls`` variant.
+    """
+    from ultralytics import YOLO
+
+    path = Path(path)
+    if path.suffix.lower() == ".pt":
+        return YOLO(str(path))
+
+    import torch
+
+    blob = torch.load(str(path), map_location="cpu", weights_only=False)
+
+    # A full Ultralytics checkpoint (or a bare pickled model) that just has the
+    # wrong extension — hand it back to YOLO() via a temp .pt. YOLO() expects a
+    # dict with a "model" key, so wrap a bare module.
+    looks_like_ckpt = isinstance(blob, dict) and hasattr(blob.get("model", None), "state_dict")
+    looks_like_module = not isinstance(blob, dict) and hasattr(blob, "state_dict") and hasattr(blob, "forward")
+    if looks_like_ckpt or looks_like_module:
+        tmp = Path(tempfile.mkdtemp()) / f"{path.stem}.pt"
+        torch.save(blob if looks_like_ckpt else {"model": blob}, tmp)
+        return YOLO(str(tmp))
+
+    # Otherwise: a plain state_dict (possibly nested under a common key).
+    state = blob
+    if isinstance(blob, dict) and not any(hasattr(v, "shape") for v in blob.values()):
+        for key in ("state_dict", "model_state_dict", "model", "weights", "net"):
+            if isinstance(blob.get(key), dict):
+                state = blob[key]
+                break
+    if not isinstance(state, dict):
+        raise ValueError(
+            f"Can't load {path.name}: torch.load returned {type(blob).__name__}, "
+            "not a checkpoint or state_dict."
+        )
+
+    yolo = YOLO(str(base_model))
+    inner = yolo.model
+    target = set(inner.state_dict())
+    matched = _best_state_dict(target, {k: v for k, v in state.items() if hasattr(v, "shape")})
+    missing, unexpected = inner.load_state_dict(matched, strict=False)
+    if len(missing) > len(target) * 0.5:
+        raise ValueError(
+            f"{path.name}: only {len(target) - len(missing)}/{len(target)} weights matched "
+            f"{Path(str(base_model)).name}'s architecture. Pass a matching base_model=."
+        )
+    if missing or unexpected:
+        print(f"[normal_classifier] loaded {path.name}: {len(missing)} missing, {len(unexpected)} unexpected keys")
+    if class_names is not None:
+        names = _names_map(class_names)
+        inner.names = names
+        yolo.names = names
+    return yolo
+
+
 class NormalClassifierDetector(EnsembleDetector):
     """Wrap any Ultralytics YOLO *classification* checkpoint as a detector.
 
@@ -163,6 +263,11 @@ class NormalClassifierDetector(EnsembleDetector):
         # someone else's checkpoint with different class names
         detector = NormalClassifierDetector.from_checkpoint(
             "their_model.pt", positive_class="1_synthetic"   # or positive_class=1
+        )
+
+        # a raw .pth state_dict — name the classes and (if needed) the base arch
+        detector = NormalClassifierDetector.from_checkpoint(
+            "their_model.pth", class_names=["real", "fake"], base_model="yolo11n-cls.pt"
         )
         result = detector.predict(some_pil_image)
         metrics = detector.evaluate(val_samples, generate_confusion_matrix=True)
@@ -203,10 +308,19 @@ class NormalClassifierDetector(EnsembleDetector):
         *,
         positive_class: int | str | None = None,
         name: str | None = None,
+        base_model: str | Path = DEFAULT_BASE_MODEL,
+        class_names: Sequence[str] | dict[int, str] | None = None,
     ) -> "NormalClassifierDetector":
-        from ultralytics import YOLO
+        """Load a YOLO classification checkpoint — ``.pt`` or ``.pth``.
 
-        return cls(YOLO(str(path)), positive_class=positive_class, name=name)
+        ``.pth`` files (raw ``torch.save`` payloads) are supported: a full
+        Ultralytics checkpoint is re-wrapped, a bare ``state_dict`` is loaded
+        into ``base_model``'s architecture. For a bare ``state_dict`` pass
+        ``class_names`` (the class list, in index order) so verdicts can be
+        named, or give a numeric ``positive_class``. See :func:`load_yolo_model`.
+        """
+        model = load_yolo_model(path, base_model=base_model, class_names=class_names)
+        return cls(model, positive_class=positive_class, name=name)
 
     @classmethod
     def use_default(cls, *, positive_class: int | str | None = None) -> "NormalClassifierDetector":
