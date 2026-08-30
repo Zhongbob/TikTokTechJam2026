@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from PIL import Image
-from shared_types import LabeledImageSample, SourceMetadata
+from shared_types import AugmentationRecord, ImagePairSample, LabeledImageSample, SourceMetadata
 
 from data.augmentation import ImageAugmenter
 
@@ -346,6 +346,102 @@ class AugmentedSIDDataset:
             prefetch=self.prefetch,
         ):
             yield LabeledImageSample(image=Image.fromarray(array), metadata=pending_meta.popleft())
+
+
+class AutoencoderDataset(AugmentedSIDDataset):
+    """Stream clean + augmented image pairs for augmentation-reversal training.
+
+    Each source SID image yields:
+
+    * one identity pair: ``input_image == target_image == original clean image``
+    * one or more augmented pairs: ``input_image = transformed image``,
+      ``target_image = same clean original image``
+
+    This keeps the paired target aligned to the original, unaugmented source,
+    while still exposing the augmented inputs that the autoencoder must undo.
+    """
+
+    def __len__(self) -> int:
+        return self.images_per_label * len(LABEL_NAMES) * (1 + self.variants_per_image)
+
+    def __repr__(self) -> str:
+        n = self.num_augmentations
+        mode = f"augment {n if isinstance(n, int) else f'{n[0]}-{n[1]}'} ({self.backend})" if self.augment else "clean"
+        variants = f", x{self.variants_per_image} variants" if self.variants_per_image > 1 else ""
+        cache = "" if self.cache_dir is None else f", cache={'warm' if self.cache_is_warm() else 'cold'}"
+        return (
+            f"AutoencoderDataset(split={self.split!r}, per_label={self.images_per_label}, "
+            f"{mode}{variants}, output_size={self.output_size}{cache})"
+        )
+
+    def __iter__(self) -> Iterator[ImagePairSample]:
+        samples = self._iter_samples()
+        if self.progress:
+            samples = self._with_bar(samples, "autoencoder")
+        yield from samples
+
+    def _iter_samples(self) -> Iterator[ImagePairSample]:
+        augmenter = ImageAugmenter(output_size=self.output_size, seed=self.seed)
+
+        for data, metadata in self._encoded_pairs():
+            clean = _decode(data, self.output_size)
+            clean_copy = clean.copy()
+            source = str(metadata.get("img_id") or metadata.get("label_name") or "unknown-source")
+            identity = AugmentationRecord(source=source, transform="identity", parameters={})
+            yield ImagePairSample(input_image=clean_copy.copy(), target_image=clean_copy.copy(), record=identity)
+
+            if not self.augment:
+                continue
+
+            arrays, records = augmenter.transform_images(
+                [data] * self.variants_per_image,
+                self.num_augmentations,
+                return_metadata=True,
+                backend=self.backend,
+                num_workers=self.num_workers,
+            )
+            for array, record in zip(arrays, records):
+                yield ImagePairSample(
+                    input_image=Image.fromarray(array),
+                    target_image=clean_copy.copy(),
+                    record=record,
+                )
+
+
+def autoencoder_dataset(
+    images_per_label: int,
+    seed: int = 4,
+    buffer_size: int = 100,
+    split: str = "train",
+    hf_token: str | None = None,
+    *,
+    augment: bool = True,
+    num_augmentations: int | tuple[int, int] = 6,
+    variants_per_image: int = 1,
+    output_size: tuple[int, int] | None = None,
+    backend: str = "thread",
+    num_workers: int | None = None,
+    prefetch: int | None = None,
+    cache_dir: str | os.PathLike[str] | None = None,
+    progress: bool = True,
+) -> AutoencoderDataset:
+    """Return a streaming autoencoder dataset of clean/augmented pairs."""
+    return AutoencoderDataset(
+        images_per_label,
+        seed=seed,
+        buffer_size=buffer_size,
+        split=split,
+        hf_token=hf_token,
+        augment=augment,
+        num_augmentations=num_augmentations,
+        variants_per_image=variants_per_image,
+        output_size=output_size,
+        backend=backend,
+        num_workers=num_workers,
+        prefetch=prefetch,
+        cache_dir=cache_dir,
+        progress=progress,
+    )
 
 
 def augmented_sid_dataset(
