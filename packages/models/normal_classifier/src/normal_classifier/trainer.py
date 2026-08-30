@@ -283,9 +283,9 @@ def _run_cli(argv: list[str] | None = None) -> None:
 
     size = (args.image_size, args.image_size)
     cache_dir = args.cache_dir or None
-    # Both are re-iterable, memory-bounded streams. Augmentation is fanned out
-    # across worker processes; the first pass caches the resized source images
-    # to cache_dir so evaluate() (and re-runs) read from disk, not the network.
+    # Both are re-iterable, memory-bounded streams. Decode + augmentation run
+    # on a worker pool; the first pass caches the raw source bytes to cache_dir
+    # so evaluate() (and re-runs) read from disk, not the network.
     train_samples = augmented_sid_dataset(
         args.train_per_label, seed=args.seed, buffer_size=args.buffer_size, split="train",
         hf_token=args.hf_token, num_augmentations=args.num_augmentations, output_size=size,

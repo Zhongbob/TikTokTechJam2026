@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections import Counter
 from functools import partial
-from typing import Callable, Iterator, Sequence
+from pathlib import Path
+from typing import Any, Callable, Iterator, Sequence
 
 from PIL import Image
 from shared_types import LabeledImageSample, SourceMetadata
@@ -12,16 +13,15 @@ from shared_types import LabeledImageSample, SourceMetadata
 LABEL_NAMES = {0: "real", 1: "synthetic", 2: "tampered"}
 
 
-def iter_sid_subset(
-    images_per_label: int, seed: int = 4, buffer_size: int = 100, split: str = "train", hf_token: str = None
-) -> Iterator[LabeledImageSample]:
-    """Yield `LabeledImageSample`s one at a time from a balanced SID-Set subset.
+def _iter_sid_raw(
+    images_per_label: int, seed: int, buffer_size: int, split: str, hf_token: str | None, decode: bool
+) -> Iterator[tuple[Any, SourceMetadata]]:
+    """Shared balanced-subset streaming core.
 
-    Unlike :func:`load_sid_subset`, nothing is accumulated in memory: each PIL image
-    is produced lazily and can be discarded by the caller before the next is fetched,
-    keeping peak memory to a single decoded image (plus the shuffle buffer). The
-    result is a single-use generator; see :func:`sid_subset_factory` when the same
-    subset must be iterated more than once.
+    Yields ``(payload, metadata)`` where ``payload`` is a decoded PIL image
+    when ``decode`` is True, otherwise the raw ``{"bytes", "path"}`` dict from
+    the Hugging Face ``Image`` feature. Stops as soon as every label's quota
+    is met; raises if the stream runs out first.
     """
     # Lazy import keeps local-folder generation usable without Hugging Face.
     import os
@@ -32,9 +32,13 @@ def iter_sid_subset(
 
     if images_per_label < 1:
         raise ValueError("images_per_label must be at least 1")
-    stream = load_dataset("saberzl/SID_Set", split=split, streaming=True).shuffle(
-        seed=seed, buffer_size=buffer_size
-    )
+    dataset = load_dataset("saberzl/SID_Set", split=split, streaming=True)
+    if not decode:
+        from datasets import Image as _HFImage
+
+        dataset = dataset.cast_column("image", _HFImage(decode=False))
+    stream = dataset.shuffle(seed=seed, buffer_size=buffer_size)
+
     counts: Counter[int] = Counter()
     for example in stream:
         label = int(example["label"])
@@ -47,11 +51,43 @@ def iter_sid_subset(
             "binary_aigc_label": int(label != 0),
         }
         counts[label] += 1
-        yield LabeledImageSample(image=example["image"].convert("RGB"), metadata=metadata)
+        yield example["image"], metadata
         if all(counts[label] >= images_per_label for label in LABEL_NAMES):
             break
     if not all(counts[label] >= images_per_label for label in LABEL_NAMES):
         raise RuntimeError(f"Could not retrieve requested balanced subset; counts={dict(counts)}")
+
+
+def iter_sid_subset(
+    images_per_label: int, seed: int = 4, buffer_size: int = 100, split: str = "train", hf_token: str = None
+) -> Iterator[LabeledImageSample]:
+    """Yield `LabeledImageSample`s one at a time from a balanced SID-Set subset.
+
+    Unlike :func:`load_sid_subset`, nothing is accumulated in memory: each PIL image
+    is produced lazily and can be discarded by the caller before the next is fetched,
+    keeping peak memory to a single decoded image (plus the shuffle buffer). The
+    result is a single-use generator; see :func:`sid_subset_factory` when the same
+    subset must be iterated more than once, or :func:`iter_sid_encoded` to move
+    image decoding off the streaming thread.
+    """
+    for image, metadata in _iter_sid_raw(images_per_label, seed, buffer_size, split, hf_token, decode=True):
+        yield LabeledImageSample(image=image.convert("RGB"), metadata=metadata)
+
+
+def iter_sid_encoded(
+    images_per_label: int, seed: int = 4, buffer_size: int = 100, split: str = "train", hf_token: str = None
+) -> Iterator[tuple[bytes, SourceMetadata]]:
+    """Like :func:`iter_sid_subset` but yields ``(raw encoded image bytes, metadata)``.
+
+    The streaming thread never pays the PNG/JPEG decode -- the caller can push
+    that onto a worker pool (`ImageAugmenter` accepts ``bytes`` directly), which
+    is the main lever when a plain `iter_sid_subset()` is decode-bound.
+    """
+    for entry, metadata in _iter_sid_raw(images_per_label, seed, buffer_size, split, hf_token, decode=False):
+        data = entry["bytes"]
+        if data is None:  # feature backed by a local file rather than inline bytes
+            data = Path(entry["path"]).read_bytes()
+        yield data, metadata
 
 
 def load_sid_subset(images_per_label: int, seed: int = 4, buffer_size: int = 100, split: str = "train", hf_token: str = None):
