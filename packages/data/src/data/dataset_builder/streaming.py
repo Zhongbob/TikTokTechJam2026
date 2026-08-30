@@ -199,10 +199,16 @@ class AugmentedSIDDataset:
         if not self.cache_is_warm():
             pairs: Iterator = self._encoded_pairs()
             if self.progress:
-                pairs = self._with_bar(pairs, "caching")
+                # one item per *source* image -- variants don't apply here
+                pairs = self._with_bar(pairs, "caching", total=self._source_count)
             for _ in pairs:
                 pass
         return self.cache_path  # type: ignore[return-value]
+
+    @property
+    def _source_count(self) -> int:
+        """Number of distinct source images (before `variants_per_image`)."""
+        return self.images_per_label * len(LABEL_NAMES)
 
     def _encoded_pairs(self) -> Iterator[tuple[bytes, SourceMetadata]]:
         """Yield ``(raw encoded image bytes, metadata)`` -- from the warm disk
@@ -273,17 +279,18 @@ class AugmentedSIDDataset:
             f"{mode}{variants}, output_size={self.output_size}{cache})"
         )
 
-    def _with_bar(self, it: Iterator, verb: str) -> Iterator:
+    def _with_bar(self, it: Iterator, verb: str, total: int | None = None) -> Iterator:
         """Wrap an iterator in a tqdm bar; a no-op if tqdm is missing."""
         try:
             from tqdm.auto import tqdm
         except ImportError:
             return it
+        total = len(self) if total is None else total
         warm = self.cache_is_warm()
         source = "disk cache" if warm else "HF stream"
-        bar = tqdm(it, total=len(self), unit="img", desc=f"SID {self.split} ({verb}, {source})")
+        bar = tqdm(it, total=total, unit="img", desc=f"SID {self.split} ({verb}, {source})")
         if not warm:
-            fill = min(self.buffer_size, len(self))
+            fill = min(self.buffer_size, total)
             hint = " Pass a smaller buffer_size= to shorten this." if fill > 16 else ""
             bar.write(
                 f"  {self.split}: streaming from HuggingFace -- the first ~{fill} images fill the "

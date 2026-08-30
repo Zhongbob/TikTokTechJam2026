@@ -210,6 +210,15 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
 
     @classmethod
     def load(cls, path: str | Path) -> "NormalClassifierTrainer":
+        """Reload a checkpoint for further training / this class's `evaluate()`.
+
+        Note: `evaluate()` here exports images into ``real/`` + ``ai_generated/``
+        folders and calls Ultralytics `val()`, which only lines up if the model
+        was trained with that same class layout. To score *someone else's*
+        classification checkpoint (different class names / order), use
+        ``NormalClassifierDetector.from_checkpoint(path, positive_class=...)``
+        and its class-name-agnostic ``.evaluate()`` instead.
+        """
         from ultralytics import YOLO
 
         instance = cls(base_weights=str(path))
