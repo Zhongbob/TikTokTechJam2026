@@ -53,7 +53,7 @@ class AutoencoderRestorerImpl(AutoencoderRestorer):
             )
         return cls.from_checkpoint(checkpoint)
 
-    def restore(self, image: Image.Image, **kwargs: Any) -> Image.Image:
+    def predict(self, image: Image.Image, **kwargs: Any) -> Image.Image:
         if self._model is None:
             raise RuntimeError("Call load()/from_checkpoint() or initialize with a model before restore()")
 
