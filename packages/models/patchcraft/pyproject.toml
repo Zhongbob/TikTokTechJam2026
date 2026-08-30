@@ -1,0 +1,25 @@
+[project]
+name = "patchcraft"
+version = "0.1.0"
+description = "PatchCraft AI-generated-image detector (EfficientNet-B4 over 'Smash & Reconstruct' texture residuals) as a shared_types EnsembleDetector. arXiv:2311.12397."
+requires-python = ">=3.11"
+
+dependencies = [
+    "torch>=2.2",
+    "timm>=0.9",
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "shared_types",
+    "detector_common",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/patchcraft"]
+
+[tool.uv.sources]
+shared_types = { workspace = true }
+detector_common = { workspace = true }

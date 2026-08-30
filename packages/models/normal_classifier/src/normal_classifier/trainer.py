@@ -251,8 +251,10 @@ def _build_cli_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-augmentations", type=_num_augmentations, default=6, metavar="N|MIN-MAX",
-                        help="How many of the data package's 6 corruptions to chain per training image: "
+                        help="How many of the data package's 6 corruptions to chain per output image: "
                              "a fixed count (e.g. 6) or a random per-image range (e.g. 2-5).")
+    parser.add_argument("--variants-per-image", type=int, default=1,
+                        help="Augmented variants to emit per source training image (dataset expansion).")
     parser.add_argument("--augment-test", action="store_true",
                         help="Also corrupt the held-out set (default: evaluate on clean images).")
     parser.add_argument("--num-workers", type=int, default=None,
@@ -288,7 +290,8 @@ def _run_cli(argv: list[str] | None = None) -> None:
     # so evaluate() (and re-runs) read from disk, not the network.
     train_samples = augmented_sid_dataset(
         args.train_per_label, seed=args.seed, buffer_size=args.buffer_size, split="train",
-        hf_token=args.hf_token, num_augmentations=args.num_augmentations, output_size=size,
+        hf_token=args.hf_token, num_augmentations=args.num_augmentations,
+        variants_per_image=args.variants_per_image, output_size=size,
         num_workers=args.num_workers, cache_dir=cache_dir,
     )
     test_samples = augmented_sid_dataset(

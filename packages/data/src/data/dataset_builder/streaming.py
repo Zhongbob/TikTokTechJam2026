@@ -52,6 +52,14 @@ def _meta_from_entry(entry: dict) -> SourceMetadata:
     return {key: entry[key] for key in _METADATA_KEYS if key in entry}  # type: ignore[return-value]
 
 
+def _variant_meta(metadata: SourceMetadata, variant: int, total: int) -> SourceMetadata:
+    """Tag a sample with its augmentation-variant index when the dataset emits
+    more than one variant per source image; otherwise pass metadata through."""
+    if total <= 1:
+        return metadata
+    return {**metadata, "variant": variant}  # type: ignore[misc]
+
+
 def _decode(data: bytes, output_size: tuple[int, int] | None) -> Image.Image:
     with Image.open(BytesIO(data)) as opened:
         image = opened.convert("RGB")
@@ -96,13 +104,19 @@ class AugmentedSIDDataset:
 
     Args:
         images_per_label: balanced count per SID label (real / synthetic /
-            tampered), so the stream yields ``3 * images_per_label`` samples.
+            tampered), so the stream yields ``3 * images_per_label *
+            variants_per_image`` samples.
         seed, buffer_size, split, hf_token: forwarded to `iter_sid_encoded()`.
         augment: when False, images are only decoded + resized -- use this for
             a validation or test stream you want left clean.
-        num_augmentations: how many of the six transforms to chain onto each
-            image. A fixed int (1-6) applies that many to every image; an
-            inclusive ``(min, max)`` pair draws a random count per image.
+        num_augmentations: how many of the six transforms to chain onto *one*
+            output image. A fixed int (1-6) applies that many to every image;
+            an inclusive ``(min, max)`` pair draws a random count per image.
+        variants_per_image: how many differently-augmented output images each
+            source image produces (dataset expansion). Each variant re-runs the
+            transform chain with fresh (seed-reproducible) randomness; variant
+            index is written to ``metadata["variant"]`` when > 1. Requires
+            ``augment=True``. The source bytes are still downloaded/cached once.
         output_size: (width, height) to resize every image to; None keeps
             native resolution.
         backend: ``"thread"`` (default) or ``"process"`` runs decode + resize
@@ -131,6 +145,7 @@ class AugmentedSIDDataset:
         *,
         augment: bool = True,
         num_augmentations: int | tuple[int, int] = 6,
+        variants_per_image: int = 1,
         output_size: tuple[int, int] | None = None,
         backend: str = "thread",
         num_workers: int | None = None,
@@ -142,6 +157,11 @@ class AugmentedSIDDataset:
             raise ValueError("images_per_label must be at least 1")
         if backend not in {"process", "thread", "sequential"}:
             raise ValueError("backend must be 'process', 'thread' or 'sequential'")
+        if variants_per_image < 1:
+            raise ValueError("variants_per_image must be at least 1")
+        if variants_per_image > 1 and not augment:
+            raise ValueError("variants_per_image > 1 needs augment=True (clean variants are identical)")
+        self.variants_per_image = variants_per_image
         self.images_per_label = images_per_label
         self.seed = seed
         self.buffer_size = buffer_size
@@ -238,19 +258,19 @@ class AugmentedSIDDataset:
     # --- iteration ----------------------------------------------------
 
     def __len__(self) -> int:
-        """Known up front: the stream is balanced with `images_per_label`
-        samples per SID label. Handy for progress bars; if the underlying
-        stream can't fill the subset, iteration raises rather than returning
-        fewer than this."""
-        return self.images_per_label * len(LABEL_NAMES)
+        """Known up front: `images_per_label` per SID label, times
+        `variants_per_image`. If the underlying stream can't fill the subset,
+        iteration raises rather than returning fewer than this."""
+        return self.images_per_label * len(LABEL_NAMES) * self.variants_per_image
 
     def __repr__(self) -> str:
         n = self.num_augmentations
         mode = f"augment {n if isinstance(n, int) else f'{n[0]}-{n[1]}'} ({self.backend})" if self.augment else "clean"
+        variants = f", x{self.variants_per_image} variants" if self.variants_per_image > 1 else ""
         cache = "" if self.cache_dir is None else f", cache={'warm' if self.cache_is_warm() else 'cold'}"
         return (
             f"AugmentedSIDDataset(split={self.split!r}, per_label={self.images_per_label}, "
-            f"{mode}, output_size={self.output_size}{cache})"
+            f"{mode}{variants}, output_size={self.output_size}{cache})"
         )
 
     def _with_bar(self, it: Iterator, verb: str) -> Iterator:
@@ -294,13 +314,17 @@ class AugmentedSIDDataset:
 
         # augment=True: decode + resize + transform chain. The augmenter takes
         # bytes directly (via image_io.load_rgb), so the whole chain -- decode
-        # included -- runs on the worker.
+        # included -- runs on the worker. Each source image is emitted
+        # `variants_per_image` times; the augmenter's RNG advances per call, so
+        # the variants get different (but seed-reproducible) transform chains.
         augmenter = ImageAugmenter(output_size=self.output_size, seed=self.seed)
+        variants = self.variants_per_image
 
         if self.backend == "sequential" or self.num_workers == 1:
             for data, metadata in pairs:
-                array, _record = augmenter.transform_one(data, self.num_augmentations)
-                yield LabeledImageSample(image=Image.fromarray(array), metadata=metadata)
+                for v in range(variants):
+                    array, _record = augmenter.transform_one(data, self.num_augmentations)
+                    yield LabeledImageSample(image=Image.fromarray(array), metadata=_variant_meta(metadata, v, variants))
             return
 
         # iter_transform_images() pulls bytes (order-preserving, bounded
@@ -309,8 +333,9 @@ class AugmentedSIDDataset:
 
         def byte_stream() -> Iterator[bytes]:
             for data, metadata in pairs:
-                pending_meta.append(metadata)
-                yield data
+                for v in range(variants):
+                    pending_meta.append(_variant_meta(metadata, v, variants))
+                    yield data
 
         for array, _record in augmenter.iter_transform_images(
             byte_stream(),
@@ -332,6 +357,7 @@ def augmented_sid_dataset(
     *,
     augment: bool = True,
     num_augmentations: int | tuple[int, int] = 6,
+    variants_per_image: int = 1,
     output_size: tuple[int, int] | None = None,
     backend: str = "thread",
     num_workers: int | None = None,
@@ -345,9 +371,19 @@ def augmented_sid_dataset(
     streaming, memory-bounded stand-in for
     `to_labeled_samples(load_sid_subset(...))` that decodes off the streaming
     thread, applies the data package's `ImageAugmenter` transforms in
-    parallel, and can cache the raw source bytes to local disk::
+    parallel, and can cache the raw source bytes to local disk.
+
+    ``num_augmentations`` controls how many of the six transforms are chained
+    onto *one* output image; ``variants_per_image`` controls how many differently
+    -augmented output images each source image produces (dataset expansion) --
+    so ``images_per_label=1000, variants_per_image=3`` yields ~9000 training
+    samples from ~3000 downloads. The source bytes are still cached/downloaded
+    once; the extra variants are generated on read.
+
+    ::
 
         train = augmented_sid_dataset(1000, split="train", output_size=(224, 224),
+                                      num_augmentations=(2, 5), variants_per_image=3,
                                       cache_dir="sid_cache")
         val = augmented_sid_dataset(200, split="validation", augment=False,
                                     output_size=(224, 224), cache_dir="sid_cache")
@@ -363,6 +399,7 @@ def augmented_sid_dataset(
         hf_token=hf_token,
         augment=augment,
         num_augmentations=num_augmentations,
+        variants_per_image=variants_per_image,
         output_size=output_size,
         backend=backend,
         num_workers=num_workers,
