@@ -9,6 +9,7 @@ what the network should reconstruct.
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -90,6 +91,19 @@ class AutoencoderTrainer(AutoencoderTrainableModel):
         self.device = torch.device(device)
         self._model: nn.Module | None = None
 
+    def _append_epoch_metrics(self, history_path: Path, epoch: int, train_loss: float, val_loss: float) -> None:
+        """Append one epoch of training metrics to a CSV file for later analysis."""
+        file_exists = history_path.exists() and history_path.stat().st_size > 0
+        with history_path.open("a", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=["epoch", "train_loss", "val_loss"])
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({
+                "epoch": int(epoch),
+                "train_loss": float(train_loss),
+                "val_loss": float(val_loss),
+            })
+
     def train(
         self,
         samples: Iterable[ImagePairSample],
@@ -122,6 +136,7 @@ class AutoencoderTrainer(AutoencoderTrainableModel):
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        history_path = output_dir / "training_history.csv"
 
         self._model = SimpleImageAutoencoder(hidden_channels=self.hidden_channels).to(self.device)
         optimizer = torch.optim.Adam(self._model.parameters(), lr=learning_rate)
@@ -162,8 +177,8 @@ class AutoencoderTrainer(AutoencoderTrainableModel):
                 best_val_loss = val_loss
                 self.save(checkpoint_path)
 
-            if epoch % max(1, epochs // 10) == 0 or epoch == epochs:
-                print(f"epoch={epoch}/{epochs} train_loss={train_loss:.6f} val_loss={val_loss:.6f}")
+            self._append_epoch_metrics(history_path, epoch, train_loss, val_loss)
+            print(f"epoch={epoch}/{epochs} train_loss={train_loss:.6f} val_loss={val_loss:.6f}")
 
         if self._model is None:
             raise RuntimeError("Training finished without creating a model")
