@@ -383,6 +383,22 @@ class AutoencoderDataset(AugmentedSIDDataset):
     def _iter_samples(self) -> Iterator[ImagePairSample]:
         augmenter = ImageAugmenter(output_size=self.output_size, seed=self.seed)
 
+        def _target_for_record(clean: Image.Image, record: AugmentationRecord | None) -> Image.Image:
+            if record is None:
+                return clean.copy()
+            for step in record.parameters.get("steps", []):
+                if step["transform"] == "center_crop":
+                    crop_ratio = step["parameters"]["crop_ratio"]
+                    width, height = clean.size
+                    crop_width = max(1, round(width * crop_ratio))
+                    crop_height = max(1, round(height * crop_ratio))
+                    left = (width - crop_width) // 2
+                    top = (height - crop_height) // 2
+                    return clean.crop((left, top, left + crop_width, top + crop_height)).resize(
+                        (width, height), Image.Resampling.LANCZOS
+                    )
+            return clean.copy()
+
         for data, metadata in self._encoded_pairs():
             clean = _decode(data, self.output_size)
             clean_copy = clean.copy()
@@ -403,7 +419,7 @@ class AutoencoderDataset(AugmentedSIDDataset):
             for array, record in zip(arrays, records):
                 yield ImagePairSample(
                     input_image=Image.fromarray(array),
-                    target_image=clean_copy.copy(),
+                    target_image=_target_for_record(clean_copy, record),
                     record=record,
                 )
 
