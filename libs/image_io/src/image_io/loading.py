@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,10 @@ def load_rgb(image: ImageInput, output_size: tuple[int, int] | None = None) -> t
         with Image.open(path) as opened:
             pil_image = opened.convert("RGB")
         source = str(path)
+    elif isinstance(image, (bytes, bytearray, memoryview)):
+        with Image.open(BytesIO(bytes(image))) as opened:
+            pil_image = opened.convert("RGB")
+        source = "<bytes>"
     elif isinstance(image, Image.Image):
         pil_image = image.convert("RGB")
         source = "<PIL.Image>"

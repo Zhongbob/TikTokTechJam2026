@@ -73,18 +73,22 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
     """Extend/instantiate this in your Colab notebook:
 
         from normal_classifier import NormalClassifierTrainer
-        from data.dataset_builder import iter_sid_subset, load_sid_subset, to_labeled_samples
+        from data.dataset_builder import augmented_sid_dataset
 
-        # Large, single-use training pull: iter_sid_subset() streams straight
-        # through train() without ever holding the whole set in memory.
-        train_samples = iter_sid_subset(images_per_label=1000, split="train")
-        # Small, reused-more-than-once validation pull: fine to materialize.
-        val_images, val_meta = load_sid_subset(images_per_label=200, split="validation")
-        val_samples = to_labeled_samples(val_images, val_meta)
+        # Re-iterable, memory-bounded streams -- one decoded image at a time.
+        # Training images get the data package's realistic corruptions;
+        # the held-out set is left clean. Both re-stream on each iteration,
+        # so train()'s val pass and evaluate() can share `val`.
+        train = augmented_sid_dataset(images_per_label=1000, split="train", output_size=(224, 224))
+        val = augmented_sid_dataset(images_per_label=200, split="validation", augment=False, output_size=(224, 224))
 
         trainer = NormalClassifierTrainer()
-        result = trainer.train(train_samples, val_samples=val_samples, epochs=100)
+        result = trainer.train(train, val_samples=val, epochs=100)
+        trainer.evaluate(val)
         trainer.save("normal_classifier.pt")
+
+    Or just run this module for a small streamed smoke test:
+        python -m normal_classifier.trainer --train-per-label 25 --epochs 5
     """
 
     name = "normal-classifier-yolo"
@@ -166,10 +170,22 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
             raise RuntimeError("Call train() or load() before evaluate()")
 
         output_dir = Path(kwargs.pop("output_dir", "yolo_eval_dataset"))
-        # Ultralytics' classification val() reads the same directory layout
-        # as train(); a directory holding only a val/ split is sufficient.
-        # Single pass, streaming-safe like train()'s export above.
-        _export_to_class_folders(samples, output_dir / "val")
+        # Single pass over `samples`, streaming-safe like train()'s export.
+        val_dir = output_dir / "val"
+        val_count = _export_to_class_folders(samples, val_dir)
+        if val_count == 0:
+            raise ValueError("samples must not be empty")
+
+        # Ultralytics' check_cls_dataset() refuses a dataset root whose train/
+        # split is missing or empty -- even for val(), which only scores the
+        # val split. Mirror val/ into train/ so the check passes; val() still
+        # evaluates val/ only.
+        train_dir = output_dir / "train"
+        if train_dir.exists():
+            shutil.rmtree(train_dir)
+        shutil.copytree(val_dir, train_dir)
+
+        kwargs.setdefault("split", "val")
         metrics = self._model.val(data=str(output_dir), **kwargs)
 
         results_dict = getattr(metrics, "results_dict", None) or {}
@@ -199,3 +215,113 @@ class NormalClassifierTrainer(ClassifierTrainableModel):
         instance = cls(base_weights=str(path))
         instance._model = YOLO(str(path))
         return instance
+
+
+# --- CLI smoke run ------------------------------------------------------
+# `python -m normal_classifier.trainer` (or running this file directly)
+# streams a small balanced SID-Set subset straight from Hugging Face via the
+# `data` library and does a short end-to-end train + evaluate, printing the
+# results. Sizes and epochs are all flags so it stays quick by default.
+
+
+def _num_augmentations(value: str) -> "int | tuple[int, int]":
+    """Parse ``N`` (fixed count) or ``MIN-MAX`` (random per-image count)."""
+    import argparse
+
+    try:
+        if "-" in value:
+            low, high = (int(part) for part in value.split("-", 1))
+            return (low, high)
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("use an int 1-6, or a range like 2-5") from None
+
+
+def _build_cli_parser() -> "argparse.ArgumentParser":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Stream a small SID-Set subset and run a short train + evaluate of the baseline classifier.",
+    )
+    parser.add_argument("--train-per-label", type=int, default=25,
+                        help="Training images streamed per SID label (real/synthetic/tampered).")
+    parser.add_argument("--test-per-label", type=int, default=10,
+                        help="Held-out images streamed per SID label for the evaluate() pass.")
+    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--num-augmentations", type=_num_augmentations, default=6, metavar="N|MIN-MAX",
+                        help="How many of the data package's 6 corruptions to chain per training image: "
+                             "a fixed count (e.g. 6) or a random per-image range (e.g. 2-5).")
+    parser.add_argument("--augment-test", action="store_true",
+                        help="Also corrupt the held-out set (default: evaluate on clean images).")
+    parser.add_argument("--num-workers", type=int, default=None,
+                        help="Worker threads for parallel augmentation (default: CPU count).")
+    parser.add_argument("--cache-dir", default="sid_cache",
+                        help="Local dir to cache the SID pull into; reused across runs. '' disables.")
+    parser.add_argument("--device", default="cpu", help="'cpu', '0', 'cuda:0', ...")
+    parser.add_argument("--seed", type=int, default=4)
+    parser.add_argument("--buffer-size", type=int, default=100,
+                        help="iter_sid_subset() streaming-shuffle window.")
+    parser.add_argument("--output-dir", default="sid_yolo_smoke")
+    parser.add_argument("--base-weights", default="yolo26n-cls.pt")
+    parser.add_argument("--hf-token", default=None)
+    return parser
+
+
+def _run_cli(argv: list[str] | None = None) -> None:
+    from data.dataset_builder import augmented_sid_dataset
+
+    args = _build_cli_parser().parse_args(argv)
+
+    print(
+        f"Streaming SID-Set: {args.train_per_label}/label train "
+        f"(augment {args.num_augmentations}), {args.test_per_label}/label test "
+        f"({'augmented' if args.augment_test else 'clean'}) | "
+        f"epochs={args.epochs} batch={args.batch} device={args.device}"
+    )
+
+    size = (args.image_size, args.image_size)
+    cache_dir = args.cache_dir or None
+    # Both are re-iterable, memory-bounded streams. Decode + augmentation run
+    # on a worker pool; the first pass caches the raw source bytes to cache_dir
+    # so evaluate() (and re-runs) read from disk, not the network.
+    train_samples = augmented_sid_dataset(
+        args.train_per_label, seed=args.seed, buffer_size=args.buffer_size, split="train",
+        hf_token=args.hf_token, num_augmentations=args.num_augmentations, output_size=size,
+        num_workers=args.num_workers, cache_dir=cache_dir,
+    )
+    test_samples = augmented_sid_dataset(
+        args.test_per_label, seed=args.seed, buffer_size=args.buffer_size, split="validation",
+        hf_token=args.hf_token, augment=args.augment_test,
+        num_augmentations=args.num_augmentations, output_size=size,
+        num_workers=args.num_workers, cache_dir=cache_dir,
+    )
+
+    trainer = NormalClassifierTrainer(base_weights=args.base_weights, image_size=args.image_size)
+    result = trainer.train(
+        train_samples,
+        val_samples=test_samples,
+        output_dir=args.output_dir,
+        epochs=args.epochs,
+        batch=args.batch,
+        device=args.device,
+    )
+
+    print("\n=== Training result ===")
+    print(f"epochs completed : {result.epochs_completed}")
+    print(f"checkpoint       : {result.checkpoint_path}")
+    print(f"notes            : {result.notes}")
+    if result.metrics:
+        print("metrics:")
+        for key, value in result.metrics.items():
+            print(f"  {key}: {value:.4f}")
+
+    metrics = trainer.evaluate(test_samples, output_dir=f"{args.output_dir}_eval")
+    print("\n=== Held-out evaluation ===")
+    for key, value in metrics.items():
+        print(f"  {key}: {value:.4f}")
+
+
+if __name__ == "__main__":
+    _run_cli()
