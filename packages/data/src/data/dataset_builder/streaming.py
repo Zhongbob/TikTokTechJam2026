@@ -80,6 +80,10 @@ class AugmentedSIDDataset:
         num_workers: pool size for the parallel backends (default: CPU count).
         prefetch: max transforms in flight for the parallel backends
             (default: ``num_workers``). Bounds memory.
+        progress: show a `tqdm` bar over the iteration (default True). The bar
+            reports throughput (img/s) and whether the source is the HF stream
+            or the disk cache; a cold HF stream sits at 0 while the first
+            ``buffer_size`` images fill the shuffle buffer.
         cache_dir: when set, the first iteration caches each clean resized
             image + label under ``cache_dir/<key>/`` and later iterations
             read from there instead of Hugging Face. The key encodes split,
@@ -103,11 +107,13 @@ class AugmentedSIDDataset:
         num_workers: int | None = None,
         prefetch: int | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
+        progress: bool = True,
     ) -> None:
         if images_per_label < 1:
             raise ValueError("images_per_label must be at least 1")
         if backend not in {"process", "thread", "sequential"}:
             raise ValueError("backend must be 'process', 'thread' or 'sequential'")
+        self.progress = progress
         self.images_per_label = images_per_label
         self.seed = seed
         self.buffer_size = buffer_size
@@ -142,7 +148,15 @@ class AugmentedSIDDataset:
         if self.cache_dir is None:
             raise ValueError("warm_cache() needs cache_dir to be set")
         if not self.cache_is_warm():
-            for _ in self._iter_clean():
+            clean = self._iter_clean()
+            if self.progress:
+                try:
+                    from tqdm.auto import tqdm
+
+                    clean = tqdm(clean, total=len(self), unit="img", desc=f"caching SID {self.split}")
+                except ImportError:
+                    pass
+            for _ in clean:
                 pass
         return self.cache_path  # type: ignore[return-value]
 
@@ -222,6 +236,34 @@ class AugmentedSIDDataset:
         )
 
     def __iter__(self) -> Iterator[LabeledImageSample]:
+        if not self.progress:
+            yield from self._iter_samples()
+            return
+
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            yield from self._iter_samples()
+            return
+
+        warm = self.cache_is_warm()
+        source = "disk cache" if warm else "HF stream"
+        bar = tqdm(total=len(self), unit="img", desc=f"SID {self.split} ({source})")
+        if not warm:
+            fill = min(self.buffer_size, len(self))
+            hint = " Pass a smaller buffer_size= (or set cache_dir=) to shorten this." if fill > 16 else ""
+            bar.write(
+                f"  {self.split}: streaming from HuggingFace -- the first ~{fill} images fill the "
+                f"shuffle buffer before the bar moves.{hint}"
+            )
+        try:
+            for sample in self._iter_samples():
+                yield sample
+                bar.update(1)
+        finally:
+            bar.close()
+
+    def _iter_samples(self) -> Iterator[LabeledImageSample]:
         clean = self._iter_clean()
 
         if not self.augment:
@@ -273,6 +315,7 @@ def augmented_sid_dataset(
     num_workers: int | None = None,
     prefetch: int | None = None,
     cache_dir: str | os.PathLike[str] | None = None,
+    progress: bool = True,
 ) -> AugmentedSIDDataset:
     """Return a re-iterable `AugmentedSIDDataset` (see that class for details).
 
@@ -302,4 +345,5 @@ def augmented_sid_dataset(
         num_workers=num_workers,
         prefetch=prefetch,
         cache_dir=cache_dir,
+        progress=progress,
     )
