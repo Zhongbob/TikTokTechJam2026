@@ -255,6 +255,10 @@ def _build_cli_parser() -> "argparse.ArgumentParser":
                              "a fixed count (e.g. 6) or a random per-image range (e.g. 2-5).")
     parser.add_argument("--augment-test", action="store_true",
                         help="Also corrupt the held-out set (default: evaluate on clean images).")
+    parser.add_argument("--num-workers", type=int, default=None,
+                        help="Worker threads for parallel augmentation (default: CPU count).")
+    parser.add_argument("--cache-dir", default="sid_cache",
+                        help="Local dir to cache the SID pull into; reused across runs. '' disables.")
     parser.add_argument("--device", default="cpu", help="'cpu', '0', 'cuda:0', ...")
     parser.add_argument("--seed", type=int, default=4)
     parser.add_argument("--buffer-size", type=int, default=100,
@@ -278,17 +282,20 @@ def _run_cli(argv: list[str] | None = None) -> None:
     )
 
     size = (args.image_size, args.image_size)
-    # Both are re-iterable, memory-bounded streams: one decoded image is live
-    # at a time, and each pass (train's val pass, then evaluate()) re-streams
-    # from Hugging Face rather than caching the subset.
+    cache_dir = args.cache_dir or None
+    # Both are re-iterable, memory-bounded streams. Augmentation is fanned out
+    # across worker processes; the first pass caches the resized source images
+    # to cache_dir so evaluate() (and re-runs) read from disk, not the network.
     train_samples = augmented_sid_dataset(
         args.train_per_label, seed=args.seed, buffer_size=args.buffer_size, split="train",
         hf_token=args.hf_token, num_augmentations=args.num_augmentations, output_size=size,
+        num_workers=args.num_workers, cache_dir=cache_dir,
     )
     test_samples = augmented_sid_dataset(
         args.test_per_label, seed=args.seed, buffer_size=args.buffer_size, split="validation",
         hf_token=args.hf_token, augment=args.augment_test,
         num_augmentations=args.num_augmentations, output_size=size,
+        num_workers=args.num_workers, cache_dir=cache_dir,
     )
 
     trainer = NormalClassifierTrainer(base_weights=args.base_weights, image_size=args.image_size)
