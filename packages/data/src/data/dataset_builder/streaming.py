@@ -1,22 +1,26 @@
-"""Re-iterable, memory-bounded SID-Set stream with data-package augmentation.
+"""Re-iterable, memory-bounded HF image streams with data-package augmentation.
 
-`iter_sid_encoded()` streams raw SID-Set image bytes; this module wraps it so
-every image is decoded, resized and (optionally) run through
-`data.augmentation.ImageAugmenter` -- the six realistic corruptions from the
-problem statement (JPEG compression, Gaussian blur, resize, Gaussian noise,
-colour jitter, centre crop) -- before it is yielded.
+A source yields ``(raw encoded image bytes, metadata)`` one at a time
+(`sid.iter_sid_encoded`, `wildfake.iter_wildfake_encoded`, ...). This module
+wraps such a source so every image is decoded, resized and (optionally) run
+through `data.augmentation.ImageAugmenter` -- the six realistic corruptions from
+the problem statement (JPEG compression, Gaussian blur, resize, Gaussian noise,
+colour jitter, centre crop) -- before it is yielded as a
+`shared_types.LabeledImageSample`.
 
-Drop-in for `to_labeled_samples(load_sid_subset(...))` wherever a
+`StreamingAugmentedDataset` is the generic engine; `AugmentedSIDDataset` /
+`augmented_sid_dataset()` wire it to SID-Set. It is a drop-in for
+`to_labeled_samples(load_sid_subset(...))` wherever a
 `shared_types.TrainableModel.train()` / `.evaluate()` consumes an
-`Iterable[LabeledImageSample]` (e.g. `NormalClassifierTrainer`), except that
-the whole subset is never held in memory.
+`Iterable[LabeledImageSample]`, except that the whole subset is never held in
+memory.
 
-Three optimisations over a naive `iter_sid_subset()` loop:
+Three optimisations over a naive per-image loop:
 
-* **Off-thread image decode** -- the source is `iter_sid_encoded()`, so the
-  streaming thread never pays the PNG/JPEG decode; decoding, resizing and the
-  transform chain all happen on a worker pool.
-* **Parallel pipeline** -- `backend="thread"` (the default) fans decode +
+* **Off-thread image decode** -- the source yields bytes, so the streaming
+  thread never pays the PNG/JPEG decode; decoding, resizing and the transform
+  chain all happen on a worker pool.
+* **Parallel pipeline** -- ``backend="thread"`` (the default) fans decode +
   resize + transform out across worker threads, yielding results in input
   order with a bounded in-flight window. Threads (not processes) are the
   default because Pillow/NumPy release the GIL, so there is real speed-up
@@ -45,11 +49,13 @@ from data.augmentation import ImageAugmenter
 
 from .sid import LABEL_NAMES, iter_sid_encoded
 
-_METADATA_KEYS = ("img_id", "sid_label", "label_name", "binary_aigc_label")
+EncodedSource = Callable[[], Iterator[tuple[bytes, SourceMetadata]]]
 
 
 def _meta_from_entry(entry: dict) -> SourceMetadata:
-    return {key: entry[key] for key in _METADATA_KEYS if key in entry}  # type: ignore[return-value]
+    """Reconstruct a sample's metadata from a cache manifest line (everything
+    except the private ``file`` pointer)."""
+    return {key: value for key, value in entry.items() if key != "file"}  # type: ignore[return-value]
 
 
 def _variant_meta(metadata: SourceMetadata, variant: int, total: int) -> SourceMetadata:
@@ -89,60 +95,55 @@ def _threaded_pairs(
             yield future.result(), done_meta
 
 
-class AugmentedSIDDataset:
-    """A re-iterable stream of (optionally augmented) SID-Set samples.
+class StreamingAugmentedDataset:
+    """Re-iterable stream of (optionally augmented) samples from a byte source.
 
-    Takes the same positional arguments as `load_sid_subset()`, plus
-    augmentation, parallelism and caching controls. Every `iter(dataset)`
-    produces the subset again -- from the local cache if one is warm,
-    otherwise by re-streaming Hugging Face. The pull is seed-deterministic,
-    so every pass sees the same source images in the same order (and the
-    same corruptions, since the augmenter is re-seeded from `seed`).
+    ``encoded_source`` is a zero-arg callable returning a FRESH
+    ``Iterator[(bytes, SourceMetadata)]`` each call (so the dataset can be
+    iterated more than once). ``total`` is the number of source images it
+    yields, ``cache_key`` names this stream's on-disk byte cache.
 
-    Peak memory is the in-flight pipeline window plus PIL buffers -- the
-    subset itself is never materialised as a list.
+    Every ``iter(dataset)`` reproduces the stream -- from the local cache if one
+    is warm, otherwise by re-running ``encoded_source``. Peak memory is the
+    in-flight pipeline window plus PIL buffers; the stream is never materialised
+    as a list.
 
     Args:
-        images_per_label: balanced count per SID label (real / synthetic /
-            tampered), so the stream yields ``3 * images_per_label *
-            variants_per_image`` samples.
-        seed, buffer_size, split, hf_token: forwarded to `iter_sid_encoded()`.
-        augment: when False, images are only decoded + resized -- use this for
-            a validation or test stream you want left clean.
+        encoded_source, total, cache_key: see above.
+        desc: label for the progress bar / repr.
+        seed: re-seeds the `ImageAugmenter` so corruptions are reproducible
+            across passes; also used in bar messaging.
+        buffer_size: source shuffle-buffer size, for bar messaging only.
+        augment: when False, images are only decoded + resized -- use this for a
+            validation or test stream you want left clean.
         num_augmentations: how many of the six transforms to chain onto *one*
-            output image. A fixed int (1-6) applies that many to every image;
-            an inclusive ``(min, max)`` pair draws a random count per image.
+            output image. A fixed int (1-6) applies that many to every image; an
+            inclusive ``(min, max)`` pair draws a random count per image.
         variants_per_image: how many differently-augmented output images each
-            source image produces (dataset expansion). Each variant re-runs the
-            transform chain with fresh (seed-reproducible) randomness; variant
-            index is written to ``metadata["variant"]`` when > 1. Requires
-            ``augment=True``. The source bytes are still downloaded/cached once.
-        output_size: (width, height) to resize every image to; None keeps
-            native resolution.
-        backend: ``"thread"`` (default) or ``"process"`` runs decode + resize
-            + transform on worker pools; ``"sequential"`` does it inline.
+            source image produces (dataset expansion). Requires ``augment=True``;
+            variant index is written to ``metadata["variant"]`` when > 1.
+        output_size: (width, height) to resize every image to; None keeps native
+            resolution.
+        backend: ``"thread"`` (default) / ``"process"`` run decode + resize +
+            transform on worker pools; ``"sequential"`` does it inline.
         num_workers: pool size for the parallel backends (default: CPU count).
         prefetch: max items in flight for the parallel backends
             (default: ``num_workers``, min 4). Bounds memory.
-        progress: show a `tqdm` bar over the iteration (default True),
-            reporting throughput (img/s) and the source (HF stream / disk
-            cache). A cold HF stream sits at 0 while the first ``buffer_size``
-            images fill the shuffle buffer.
-        cache_dir: when set, the first pass writes each image's raw bytes
-            under ``cache_dir/<key>/`` and later passes read from there instead
-            of Hugging Face. The key encodes split, counts, seed and shuffle
-            buffer (not output_size -- the cache holds original bytes). Not
-            safe for concurrent writers.
+        cache_dir: when set, the first pass writes each image's raw bytes under
+            ``cache_dir/<cache_key>/`` and later passes read from there instead
+            of the network. Not safe for concurrent writers.
+        progress: show a `tqdm` bar over the iteration (default True).
     """
 
     def __init__(
         self,
-        images_per_label: int,
+        *,
+        encoded_source: EncodedSource,
+        total: int,
+        cache_key: str,
+        desc: str = "dataset",
         seed: int = 4,
         buffer_size: int = 100,
-        split: str = "train",
-        hf_token: str | None = None,
-        *,
         augment: bool = True,
         num_augmentations: int | tuple[int, int] = 6,
         variants_per_image: int = 1,
@@ -153,22 +154,24 @@ class AugmentedSIDDataset:
         cache_dir: str | os.PathLike[str] | None = None,
         progress: bool = True,
     ) -> None:
-        if images_per_label < 1:
-            raise ValueError("images_per_label must be at least 1")
+        if total < 1:
+            raise ValueError("total must be at least 1")
         if backend not in {"process", "thread", "sequential"}:
             raise ValueError("backend must be 'process', 'thread' or 'sequential'")
         if variants_per_image < 1:
             raise ValueError("variants_per_image must be at least 1")
         if variants_per_image > 1 and not augment:
             raise ValueError("variants_per_image > 1 needs augment=True (clean variants are identical)")
-        self.variants_per_image = variants_per_image
-        self.images_per_label = images_per_label
+
+        self._encoded_source = encoded_source
+        self._total = total
+        self._cache_key = cache_key
+        self._desc = desc
         self.seed = seed
         self.buffer_size = buffer_size
-        self.split = split
-        self.hf_token = hf_token
         self.augment = augment
         self.num_augmentations = num_augmentations
+        self.variants_per_image = variants_per_image
         self.output_size = output_size
         self.backend = backend
         self.num_workers = num_workers
@@ -183,12 +186,16 @@ class AugmentedSIDDataset:
         """Directory this dataset's byte cache lives in, or None if uncached."""
         if self.cache_dir is None:
             return None
-        key = f"sid-{self.split}-{self.images_per_label}pl-seed{self.seed}-buf{self.buffer_size}-raw"
-        return self.cache_dir / key
+        return self.cache_dir / self._cache_key
 
     def cache_is_warm(self) -> bool:
         path = self.cache_path
         return path is not None and (path / "_complete.json").is_file()
+
+    @property
+    def _source_count(self) -> int:
+        """Number of distinct source images (before `variants_per_image`)."""
+        return self._total
 
     def warm_cache(self) -> Path:
         """Populate the disk cache: one streaming pass that just downloads and
@@ -199,21 +206,15 @@ class AugmentedSIDDataset:
         if not self.cache_is_warm():
             pairs: Iterator = self._encoded_pairs()
             if self.progress:
-                # one item per *source* image -- variants don't apply here
                 pairs = self._with_bar(pairs, "caching", total=self._source_count)
             for _ in pairs:
                 pass
         return self.cache_path  # type: ignore[return-value]
 
-    @property
-    def _source_count(self) -> int:
-        """Number of distinct source images (before `variants_per_image`)."""
-        return self.images_per_label * len(LABEL_NAMES)
-
     def _encoded_pairs(self) -> Iterator[tuple[bytes, SourceMetadata]]:
         """Yield ``(raw encoded image bytes, metadata)`` -- from the warm disk
-        cache if there is one, else from Hugging Face, writing the bytes to the
-        cache as they stream when ``cache_dir`` is set."""
+        cache if there is one, else from ``encoded_source``, writing the bytes
+        to the cache as they stream when ``cache_dir`` is set."""
         cache = self.cache_path
 
         if self.cache_is_warm():
@@ -232,13 +233,7 @@ class AugmentedSIDDataset:
             cache.mkdir(parents=True, exist_ok=True)
             manifest_file = (cache / "metadata.jsonl").open("w", encoding="utf-8")
         try:
-            for data, metadata in iter_sid_encoded(
-                self.images_per_label,
-                seed=self.seed,
-                buffer_size=self.buffer_size,
-                split=self.split,
-                hf_token=self.hf_token,
-            ):
+            for data, metadata in self._encoded_source():
                 if writing:
                     filename = f"{count:06d}.bin"
                     (cache / filename).write_bytes(data)
@@ -251,33 +246,25 @@ class AugmentedSIDDataset:
                 manifest_file.close()
                 if completed:
                     (cache / "_complete.json").write_text(
-                        json.dumps({
-                            "count": count,
-                            "images_per_label": self.images_per_label,
-                            "split": self.split,
-                            "seed": self.seed,
-                            "buffer_size": self.buffer_size,
-                        }),
+                        json.dumps({"count": count, "cache_key": self._cache_key}),
                         encoding="utf-8",
                     )
 
     # --- iteration ----------------------------------------------------
 
     def __len__(self) -> int:
-        """Known up front: `images_per_label` per SID label, times
-        `variants_per_image`. If the underlying stream can't fill the subset,
-        iteration raises rather than returning fewer than this."""
-        return self.images_per_label * len(LABEL_NAMES) * self.variants_per_image
+        """Expected sample count: `total` source images times
+        `variants_per_image`."""
+        return self._total * self.variants_per_image
 
     def __repr__(self) -> str:
         n = self.num_augmentations
-        mode = f"augment {n if isinstance(n, int) else f'{n[0]}-{n[1]}'} ({self.backend})" if self.augment else "clean"
+        mode = (f"augment {n if isinstance(n, int) else f'{n[0]}-{n[1]}'} ({self.backend})"
+                if self.augment else "clean")
         variants = f", x{self.variants_per_image} variants" if self.variants_per_image > 1 else ""
         cache = "" if self.cache_dir is None else f", cache={'warm' if self.cache_is_warm() else 'cold'}"
-        return (
-            f"AugmentedSIDDataset(split={self.split!r}, per_label={self.images_per_label}, "
-            f"{mode}{variants}, output_size={self.output_size}{cache})"
-        )
+        return (f"{type(self).__name__}({self._desc!r}, n={self._total}, "
+                f"{mode}{variants}, output_size={self.output_size}{cache})")
 
     def _with_bar(self, it: Iterator, verb: str, total: int | None = None) -> Iterator:
         """Wrap an iterator in a tqdm bar; a no-op if tqdm is missing."""
@@ -288,13 +275,13 @@ class AugmentedSIDDataset:
         total = len(self) if total is None else total
         warm = self.cache_is_warm()
         source = "disk cache" if warm else "HF stream"
-        bar = tqdm(it, total=total, unit="img", desc=f"SID {self.split} ({verb}, {source})")
+        bar = tqdm(it, total=total, unit="img", desc=f"{self._desc} ({verb}, {source})")
         if not warm:
             fill = min(self.buffer_size, total)
             hint = " Pass a smaller buffer_size= to shorten this." if fill > 16 else ""
             bar.write(
-                f"  {self.split}: streaming from HuggingFace -- the first ~{fill} images fill the "
-                f"shuffle buffer before the bar moves.{hint}"
+                f"  {self._desc}: streaming from HuggingFace -- the first ~{fill} images "
+                f"fill the shuffle buffer before the bar moves.{hint}"
             )
         return bar
 
@@ -353,6 +340,77 @@ class AugmentedSIDDataset:
             prefetch=self.prefetch,
         ):
             yield LabeledImageSample(image=Image.fromarray(array), metadata=pending_meta.popleft())
+
+
+class AugmentedSIDDataset(StreamingAugmentedDataset):
+    """`StreamingAugmentedDataset` wired to a balanced `saberzl/SID_Set` subset.
+
+    Takes the same positional arguments as `load_sid_subset()`, plus
+    augmentation, parallelism and caching controls. Iterating yields
+    ``3 * images_per_label * variants_per_image`` `LabeledImageSample`s (real /
+    synthetic / tampered), re-streaming HF (or reading the warm cache) each pass.
+
+    Args:
+        images_per_label: balanced count per SID label.
+        seed, buffer_size, split, hf_token: forwarded to `iter_sid_encoded()`.
+        (see `StreamingAugmentedDataset` for augment / num_augmentations /
+        variants_per_image / output_size / backend / num_workers / prefetch /
+        cache_dir / progress.)
+    """
+
+    def __init__(
+        self,
+        images_per_label: int,
+        seed: int = 4,
+        buffer_size: int = 100,
+        split: str = "train",
+        hf_token: str | None = None,
+        *,
+        augment: bool = True,
+        num_augmentations: int | tuple[int, int] = 6,
+        variants_per_image: int = 1,
+        output_size: tuple[int, int] | None = None,
+        backend: str = "thread",
+        num_workers: int | None = None,
+        prefetch: int | None = None,
+        cache_dir: str | os.PathLike[str] | None = None,
+        progress: bool = True,
+    ) -> None:
+        if images_per_label < 1:
+            raise ValueError("images_per_label must be at least 1")
+        self.images_per_label = images_per_label
+        self.split = split
+        self.hf_token = hf_token
+        super().__init__(
+            encoded_source=lambda: iter_sid_encoded(
+                images_per_label, seed=seed, buffer_size=buffer_size, split=split, hf_token=hf_token,
+            ),
+            total=images_per_label * len(LABEL_NAMES),
+            cache_key=f"sid-{split}-{images_per_label}pl-seed{seed}-buf{buffer_size}-raw",
+            desc=f"SID {split}",
+            seed=seed,
+            buffer_size=buffer_size,
+            augment=augment,
+            num_augmentations=num_augmentations,
+            variants_per_image=variants_per_image,
+            output_size=output_size,
+            backend=backend,
+            num_workers=num_workers,
+            prefetch=prefetch,
+            cache_dir=cache_dir,
+            progress=progress,
+        )
+
+    def __repr__(self) -> str:
+        n = self.num_augmentations
+        mode = (f"augment {n if isinstance(n, int) else f'{n[0]}-{n[1]}'} ({self.backend})"
+                if self.augment else "clean")
+        variants = f", x{self.variants_per_image} variants" if self.variants_per_image > 1 else ""
+        cache = "" if self.cache_dir is None else f", cache={'warm' if self.cache_is_warm() else 'cold'}"
+        return (
+            f"AugmentedSIDDataset(split={self.split!r}, per_label={self.images_per_label}, "
+            f"{mode}{variants}, output_size={self.output_size}{cache})"
+        )
 
 
 def augmented_sid_dataset(
