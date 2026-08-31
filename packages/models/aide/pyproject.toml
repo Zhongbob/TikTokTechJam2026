@@ -1,0 +1,26 @@
+[project]
+name = "aide"
+version = "0.1.0"
+description = "AIDE (AI-generated Image DEtector) as a shared_types EnsembleDetector. Combines an OpenCLIP ConvNeXt semantic branch with a high/low-frequency patch branch. GitHub: shilinyan99/AIDE."
+requires-python = ">=3.11"
+
+dependencies = [
+    "torch>=2.2",
+    "timm>=0.9",
+    "open-clip-torch>=2.24",
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "shared_types",
+    "detector_common",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aide"]
+
+[tool.uv.sources]
+shared_types = { workspace = true }
+detector_common = { workspace = true }
