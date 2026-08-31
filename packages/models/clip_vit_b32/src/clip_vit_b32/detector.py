@@ -23,7 +23,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from detector_common import ImageDetector, resolve_device
+from detector_common import ImageDetector, locate_checkpoint, resolve_device
+from detector_common.weights import candidate_weight_dirs
 from PIL import Image
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -166,20 +167,25 @@ class ClipViTB32Detector(ImageDetector):
         checkpoint: str | Path | None = None,
         **kwargs: Any,
     ) -> "ClipViTB32Detector":
-        """``checkpoint=`` takes an explicit ``.pt`` path; otherwise the first
-        ``clip_vit_b32*.pt`` in ``src/weights/`` then the repo root."""
+        """``checkpoint=`` takes an explicit ``.pt`` path; otherwise
+        ``clip_vit_b32*.pt`` is searched for across the usual weight locations
+        (``$CLIP_VIT_B32_CHECKPOINT``, the package ``weights/``, the repo
+        checkout, the cwd, ``/content``)."""
         if checkpoint is not None:
             return cls.from_checkpoint(Path(checkpoint).expanduser(), device=device, **kwargs)
-        for directory in (DEFAULT_WEIGHTS_DIR, REPO_ROOT):
-            for pattern in ("clip_vit_b32*.pt", "clip*vit*b32*.pt", "clip_vit_b32*.pth"):
-                hits = sorted(directory.glob(pattern))
-                if hits:
-                    return cls.from_checkpoint(hits[0], device=device, **kwargs)
-        raise FileNotFoundError(
-            f"No CLIP ViT-B/32 checkpoint (clip_vit_b32*.pt) found in "
-            f"{DEFAULT_WEIGHTS_DIR} or {REPO_ROOT}. Pass checkpoint=<path>, put it "
-            "in one of them, or call from_checkpoint(path)."
+        hit = locate_checkpoint(
+            ("clip_vit_b32_best.pt", "clip_vit_b32*.pt", "clip*vit*b32*.pt", "clip_vit_b32*.pth"),
+            script_dir=SCRIPT_DIR, env_var="CLIP_VIT_B32_CHECKPOINT",
         )
+        if hit is None:
+            looked = ", ".join(str(d) for d in candidate_weight_dirs(
+                SCRIPT_DIR, env_var="CLIP_VIT_B32_CHECKPOINT"))
+            raise FileNotFoundError(
+                "CLIP ViT-B/32 checkpoint (clip_vit_b32_best.pt) not found. Pass "
+                "checkpoint=<path>, set $CLIP_VIT_B32_CHECKPOINT, or drop it in one "
+                f"of: {looked}"
+            )
+        return cls.from_checkpoint(hit, device=device, **kwargs)
 
     # --- scoring -----------------------------------------------------
 

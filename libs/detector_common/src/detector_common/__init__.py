@@ -11,6 +11,7 @@ from detector_common.base import ImageDetector, resolve_device, save_confusion_m
 from detector_common.combiner import CombinerDetector, METHODS, meta_score
 from detector_common.combiner_trainer import CombinerTrainer
 from detector_common.meta import MetaClassifier, default_estimator
+from detector_common.weights import candidate_weight_dirs, locate_checkpoint
 
 __all__ = [
     "ImageDetector",
@@ -22,4 +23,6 @@ __all__ = [
     "default_estimator",
     "meta_score",
     "METHODS",
+    "locate_checkpoint",
+    "candidate_weight_dirs",
 ]

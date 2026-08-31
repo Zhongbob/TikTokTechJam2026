@@ -8,6 +8,7 @@ dependencies = [
     "ultralytics>=8.3",
     "pillow>=10.0",
     "shared_types",
+    "detector_common",
     "data",
 ]
 
@@ -20,4 +21,5 @@ packages = ["src/normal_classifier"]
 
 [tool.uv.sources]
 shared_types = { workspace = true }
+detector_common = { workspace = true }
 data = { workspace = true }

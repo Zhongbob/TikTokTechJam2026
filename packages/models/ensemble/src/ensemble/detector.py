@@ -141,7 +141,7 @@ class EnsembleDetector(CombinerDetector):
         *,
         device: str = "auto",
         method: str = "max",
-        weights: list[float] | None = None,
+        weights: list[float] | None = [0.0833, 0.0, 0.1667, 0.1667, 0.4167, 0.1667],
         decision_threshold: float | None = None,
         include: Sequence[str] = DEFAULT_MEMBERS,
         use_autoencoder: bool = False,

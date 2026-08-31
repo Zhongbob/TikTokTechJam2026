@@ -3,3 +3,9 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
+
+# large model checkpoints — kept local, loaded via checkpoint= / $*_CHECKPOINT
+packages/models/swin/src/weights/*.pth
+packages/models/swin/src/weights/*.pt
+packages/models/dinov2/src/weights/*.pt
+dino.pt

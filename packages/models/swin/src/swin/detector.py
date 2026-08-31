@@ -25,7 +25,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from detector_common import ImageDetector, resolve_device
+from detector_common import ImageDetector, locate_checkpoint, resolve_device
+from detector_common.weights import candidate_weight_dirs
 from PIL import Image
 
 from swin._swin_transformer import SwinTransformer
@@ -170,13 +171,19 @@ class SwinDetector(ImageDetector):
     ) -> "SwinDetector":
         """``checkpoint=`` takes an explicit ``.pth`` path; otherwise the one
         bundled with this package (``src/weights/best_swin_tiny_binary.pth``)."""
-        path = Path(checkpoint).expanduser() if checkpoint is not None else DEFAULT_CHECKPOINT
-        if not path.is_file():
+        if checkpoint is not None:
+            path = Path(checkpoint).expanduser()
+        else:
+            path = locate_checkpoint(
+                ("best_swin_tiny_binary.pth", "best_swin*.pth", "swin*.pth"),
+                script_dir=SCRIPT_DIR, env_var="SWIN_CHECKPOINT",
+            )
+        if path is None or not path.is_file():
+            looked = ", ".join(str(d) for d in candidate_weight_dirs(SCRIPT_DIR, env_var="SWIN_CHECKPOINT"))
             raise FileNotFoundError(
-                f"Swin checkpoint not found at {path}. Pass checkpoint=<path>, train one "
-                "with packages/models/swin/s3_swin_transformer_streaming.ipynb (it writes "
-                f"best_swin_tiny_binary.pth) and place it at {DEFAULT_CHECKPOINT}, or "
-                "call from_checkpoint(path)."
+                f"Swin checkpoint (best_swin_tiny_binary.pth) not found. Pass "
+                "checkpoint=<path>, set $SWIN_CHECKPOINT, or drop the file in one of: "
+                f"{looked}"
             )
         return cls.from_checkpoint(path, device=device, positive_class=positive_class)
 

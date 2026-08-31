@@ -21,7 +21,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from detector_common import ImageDetector, resolve_device
+from detector_common import ImageDetector, locate_checkpoint, resolve_device
+from detector_common.weights import candidate_weight_dirs
 from PIL import Image
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -114,21 +115,26 @@ class ConvNextAIGCDetector(ImageDetector):
         checkpoint: str | Path | None = None,
         positive_index: int | None = None,
     ) -> "ConvNextAIGCDetector":
-        """``checkpoint=`` takes an explicit ``.zip`` / model dir; otherwise the
-        first ``convnext_aigc*`` in ``src/weights/`` then the repo root."""
+        """``checkpoint=`` takes an explicit ``.zip`` / model dir; otherwise a
+        ``convnext_aigc*`` zip or dir is searched for across the usual weight
+        locations (``$CONVNEXT_AIGC_CHECKPOINT``, the package ``weights/``, the
+        repo checkout, the cwd, ``/content``)."""
         if checkpoint is not None:
             return cls.from_checkpoint(Path(checkpoint).expanduser(), device=device,
                                        positive_index=positive_index)
-        for directory in (DEFAULT_WEIGHTS_DIR, REPO_ROOT):
-            for pattern in ("convnext_aigc*", "convnext*aigc*"):
-                for hit in sorted(directory.glob(pattern)):
-                    if hit.is_dir() or hit.suffix.lower() == ".zip":
-                        return cls.from_checkpoint(hit, device=device, positive_index=positive_index)
-        raise FileNotFoundError(
-            f"No ConvNeXt AIGC checkpoint (a run dir or *.zip) found in "
-            f"{DEFAULT_WEIGHTS_DIR} or {REPO_ROOT}. Pass checkpoint=<path>, put "
-            "convnext_aigc_run.zip in one of them, or call from_checkpoint(path)."
+        hit = locate_checkpoint(
+            ("convnext_aigc_run.zip", "convnext_aigc*.zip", "convnext_aigc*", "convnext*aigc*"),
+            script_dir=SCRIPT_DIR, env_var="CONVNEXT_AIGC_CHECKPOINT", allow_dir=True,
         )
+        if hit is None:
+            looked = ", ".join(str(d) for d in candidate_weight_dirs(
+                SCRIPT_DIR, env_var="CONVNEXT_AIGC_CHECKPOINT"))
+            raise FileNotFoundError(
+                "ConvNeXt AIGC checkpoint (convnext_aigc_run.zip or an extracted model "
+                "dir) not found. Pass checkpoint=<path>, set $CONVNEXT_AIGC_CHECKPOINT, "
+                f"or drop it in one of: {looked}"
+            )
+        return cls.from_checkpoint(hit, device=device, positive_index=positive_index)
 
     # --- scoring -----------------------------------------------------
 

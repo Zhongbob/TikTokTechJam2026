@@ -26,7 +26,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from detector_common import ImageDetector, resolve_device
+from detector_common import ImageDetector, locate_checkpoint, resolve_device
+from detector_common.weights import candidate_weight_dirs
 from PIL import Image
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -193,20 +194,23 @@ class DINOv2Detector(ImageDetector):
         checkpoint: str | Path | None = None,
         **kwargs: Any,
     ) -> "DINOv2Detector":
-        """``checkpoint=`` takes an explicit ``.pt`` path; otherwise the first
-        ``dino*.pt`` in ``src/weights/`` then the repo root."""
+        """``checkpoint=`` takes an explicit ``.pt`` path; otherwise ``dino*.pt``
+        is searched for across the usual weight locations
+        (``$DINOV2_CHECKPOINT``, the package ``weights/``, the repo checkout, the
+        cwd, ``/content``)."""
         if checkpoint is not None:
             return cls.from_checkpoint(Path(checkpoint).expanduser(), device=device, **kwargs)
-        for directory in (DEFAULT_WEIGHTS_DIR, REPO_ROOT):
-            for pattern in ("dino*.pt", "dinov2*.pt", "dino*.pth"):
-                hits = sorted(directory.glob(pattern))
-                if hits:
-                    return cls.from_checkpoint(hits[0], device=device, **kwargs)
-        raise FileNotFoundError(
-            f"No DINOv2 checkpoint (dino*.pt) found in {DEFAULT_WEIGHTS_DIR} or "
-            f"{REPO_ROOT}. Pass checkpoint=<path>, put it in one of them, or call "
-            "from_checkpoint(path)."
+        hit = locate_checkpoint(
+            ("dino.pt", "dino*.pt", "dinov2*.pt", "dino*.pth"),
+            script_dir=SCRIPT_DIR, env_var="DINOV2_CHECKPOINT",
         )
+        if hit is None:
+            looked = ", ".join(str(d) for d in candidate_weight_dirs(SCRIPT_DIR, env_var="DINOV2_CHECKPOINT"))
+            raise FileNotFoundError(
+                "DINOv2 checkpoint (dino.pt) not found. Pass checkpoint=<path>, set "
+                f"$DINOV2_CHECKPOINT, or drop it in one of: {looked}"
+            )
+        return cls.from_checkpoint(hit, device=device, **kwargs)
 
     # --- scoring -----------------------------------------------------
 

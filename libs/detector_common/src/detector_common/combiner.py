@@ -70,6 +70,14 @@ class CombinerDetector(ImageDetector):
             raise ValueError(f"method must be one of {sorted(METHODS)} (or 'threshold' == 'max')")
         if decision_threshold is None:
             decision_threshold = self.default_max_threshold if method == "max" else 0.5
+            if method in ("weighted", "meta"):
+                print(
+                    f"[{type(self).__name__}] WARNING: method={method!r} with no "
+                    f"decision_threshold — using {decision_threshold}. The fitted "
+                    "threshold rarely equals 0.5; build via "
+                    f"trainer.as_detector(method={method!r}) or pass "
+                    "decision_threshold= from your trainer's report."
+                )
         if method == "weighted" and (weights is None or len(weights) != len(members)):
             raise ValueError("method='weighted' needs weights= matching the members")
         if method == "meta" and meta_classifier is None:

@@ -435,7 +435,7 @@ class CombinerTrainer(ClassifierTrainableModel):
 
     def evaluate(
         self,
-        samples: Iterable[LabeledImageSample],
+        samples: Iterable[LabeledImageSample] | None = None,
         *,
         method: str | None = None,
         decision_threshold: float | None = None,
@@ -450,6 +450,8 @@ class CombinerTrainer(ClassifierTrainableModel):
         Omit it to use whatever is fitted (meta > weighted), else ``"max"``.
         """
         if X is None or y is None:
+            if samples is None:
+                raise ValueError("pass either samples= or both X= and y=")
             X, y = self.member_score_matrix(samples)
         X = [list(map(float, r)) for r in X]
         y = [int(v) for v in y]

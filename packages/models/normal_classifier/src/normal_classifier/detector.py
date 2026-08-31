@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
+from detector_common.weights import candidate_weight_dirs, locate_checkpoint
 from PIL import Image
 from shared_types import LabeledImageSample
 from shared_types.detection import DetectionResult, EnsembleMemberResult
@@ -337,12 +338,20 @@ class NormalClassifierDetector(EnsembleDetector):
         one bundled with this package
         (``src/weights/normal_classifier_augmented.pt``).
         """
-        checkpoint = Path(checkpoint).expanduser() if checkpoint is not None else cls.DEFAULT_CHECKPOINT
-        if not checkpoint.is_file():
+        if checkpoint is not None:
+            checkpoint = Path(checkpoint).expanduser()
+        else:
+            checkpoint = locate_checkpoint(
+                ("normal_classifier_augmented.pt", "normal_classifier*.pt", "normal_classifier*.pth"),
+                script_dir=SCRIPT_DIR, env_var="NORMAL_CLASSIFIER_CHECKPOINT",
+            )
+        if checkpoint is None or not checkpoint.is_file():
+            looked = ", ".join(str(d) for d in candidate_weight_dirs(
+                SCRIPT_DIR, env_var="NORMAL_CLASSIFIER_CHECKPOINT"))
             raise FileNotFoundError(
-                f"Checkpoint not found at {checkpoint}. Pass checkpoint=<path>, train "
-                "one with NormalClassifierTrainer and save it to "
-                f"{cls.DEFAULT_CHECKPOINT}, or call from_checkpoint(path)."
+                "NormalClassifier checkpoint (normal_classifier_augmented.pt) not found. "
+                "Pass checkpoint=<path>, set $NORMAL_CLASSIFIER_CHECKPOINT, or drop the "
+                f"file in one of: {looked}"
             )
         return cls.from_checkpoint(
             checkpoint, positive_class=positive_class,
