@@ -13,6 +13,27 @@ from shared_types.detection import DetectionResult, EnsembleMemberResult
 _CLASS_LABELS = ("real", "ai_generated")
 
 
+def _roc_auc(positives: list[float], negatives: list[float]) -> float:
+    """Threshold-free separability (Mann-Whitney U). 1.0 = perfect, 0.5 = chance,
+    < 0.5 = the score is inverted. Pure-python, no sklearn."""
+    if not positives or not negatives:
+        return float("nan")
+    combined = sorted([(s, 1) for s in positives] + [(s, 0) for s in negatives])
+    ranks: dict[int, float] = {}
+    i = 0
+    while i < len(combined):
+        j = i
+        while j < len(combined) and combined[j][0] == combined[i][0]:
+            j += 1
+        average = (i + j - 1) / 2 + 1
+        for k in range(i, j):
+            ranks[k] = average
+        i = j
+    rank_sum_pos = sum(ranks[idx] for idx, (_, label) in enumerate(combined) if label == 1)
+    n_pos, n_neg = len(positives), len(negatives)
+    return (rank_sum_pos - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+
+
 def resolve_device(device: str = "auto") -> str:
     """Turn ``"auto"`` into ``"cuda"`` / ``"mps"`` / ``"cpu"``; pass anything
     else straight through. Imports torch lazily so this module stays light."""
@@ -120,23 +141,25 @@ class ImageDetector(ABC):
         self,
         samples: Iterable[LabeledImageSample],
         generate_confusion_matrix: bool = False,
+        *,
+        decision_threshold: float | None = None,
         **kwargs: Any,
     ) -> dict[str, float]:
         """Score the detector on labelled `samples` by running `predict()` on
-        each and comparing the verdict to the ground-truth `binary_aigc_label`
-        (0 = real, 1 = ai_generated).
+        each and comparing ``ai_generated_probability`` to a threshold against
+        the ground-truth `binary_aigc_label` (0 = real, 1 = ai_generated).
 
-        Same calling convention as `NormalClassifierDetector.evaluate()`:
-        `samples` plus keyword extras, with `output_dir` (default
-        ``"<name>_eval"``) popped for artefacts.
+        `decision_threshold` overrides ``self.decision_threshold`` for this call
+        only. `output_dir` (default ``"<name>_eval"``) is popped for artefacts.
 
-        When `generate_confusion_matrix` is True, a 2x2 confusion-matrix image
-        is written under `output_dir`.
-
-        Returns accuracy / precision / recall / f1 for the "ai_generated"
-        class, plus raw `tn` / `fp` / `fn` / `tp` counts and `n_samples`.
+        Returns accuracy / precision / recall / f1 / **roc_auc** (threshold-free
+        separability — 1.0 perfect, ~0.5 no signal, <0.5 inverted) at the chosen
+        threshold, plus `mean_score_real` / `mean_score_ai`, the raw
+        `tn` / `fp` / `fn` / `tp` counts and `n_samples`. Prints a warning when
+        the two classes' scores barely differ or the AUC is < 0.5.
         """
         output_dir = Path(kwargs.pop("output_dir", f"{self.name}_eval"))
+        threshold = self.decision_threshold if decision_threshold is None else float(decision_threshold)
 
         iterator: Iterable[LabeledImageSample] = samples
         try:
@@ -146,31 +169,57 @@ class ImageDetector(ABC):
         except (ImportError, TypeError):
             pass
 
-        confusion = [[0, 0], [0, 0]]  # confusion[true][pred]
+        scores: list[float] = []
+        trues: list[int] = []
         for sample in iterator:
-            true_label = int(sample.metadata["binary_aigc_label"])
-            predicted = 1 if self.predict(sample.image).verdict == "ai_generated" else 0
-            confusion[true_label][predicted] += 1
+            trues.append(int(sample.metadata["binary_aigc_label"]))
+            scores.append(float(self.predict(sample.image).ai_generated_probability))
 
-        total = sum(sum(row) for row in confusion)
+        total = len(trues)
         if total == 0:
             raise ValueError("samples must not be empty")
+
+        confusion = [[0, 0], [0, 0]]  # confusion[true][pred]
+        for true_label, score in zip(trues, scores):
+            confusion[true_label][1 if score >= threshold else 0] += 1
 
         tn, fp = confusion[0]
         fn, tp = confusion[1]
         precision = tp / (tp + fp) if tp + fp else 0.0
         recall = tp / (tp + fn) if tp + fn else 0.0
+        ai_scores = [s for s, t in zip(scores, trues) if t == 1]
+        real_scores = [s for s, t in zip(scores, trues) if t == 0]
+        mean_ai = sum(ai_scores) / len(ai_scores) if ai_scores else float("nan")
+        mean_real = sum(real_scores) / len(real_scores) if real_scores else float("nan")
+        auc = _roc_auc(ai_scores, real_scores)
+
         metrics = {
             "accuracy": (tp + tn) / total,
             "precision": precision,
             "recall": recall,
             "f1": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,
+            "roc_auc": auc,
+            "threshold": threshold,
+            "mean_score_real": mean_real,
+            "mean_score_ai": mean_ai,
             "tn": float(tn),
             "fp": float(fp),
             "fn": float(fn),
             "tp": float(tp),
             "n_samples": float(total),
         }
+
+        if ai_scores and real_scores:
+            if abs(mean_ai - mean_real) < 0.02:
+                print(
+                    f"[{self.name}] WARNING: p(ai) barely differs between classes "
+                    f"(real {mean_real:.3f} vs ai {mean_ai:.3f}) — the model is not discriminating on this data."
+                )
+            elif auc < 0.5:
+                print(
+                    f"[{self.name}] NOTE: roc_auc {auc:.3f} < 0.5 — scores look inverted; "
+                    "construct the detector with flip=True (or swap the positive index)."
+                )
 
         if generate_confusion_matrix:
             path = save_confusion_matrix(confusion, output_dir, f"{self.name} confusion matrix")
