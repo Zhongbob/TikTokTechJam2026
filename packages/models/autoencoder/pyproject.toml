@@ -1,13 +1,15 @@
 [project]
 name = "autoencoder"
 version = "0.1.0"
-description = "This autoencoder transforms the augmented image back into it's original form to the best of it's ability."
+description = "Autoencoder for reversing augmentation damage on images. Reference implementation of shared_types.TrainableModel / AutoencoderRestorer."
 requires-python = ">=3.11"
 
 dependencies = [
-    "data"
-    # runtime deps specific to THIS package only
-    # e.g. "torch>=2.2", "transformers", "numpy"
+    "torch>=2.2",
+    "pillow>=10.0",
+    "numpy>=1.26",
+    "shared_types",
+    "data",
 ]
 
 [build-system]
@@ -15,7 +17,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/autoencoder"]      
+packages = ["src/autoencoder"]
 
 [tool.uv.sources]
+shared_types = { workspace = true }
 data = { workspace = true }

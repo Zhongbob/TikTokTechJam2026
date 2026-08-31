@@ -12,8 +12,8 @@ Configs (all ``split="validation"``):
                           all 200x200; fakes vary -> pass ``output_size=`` for a
                           fair eval, or use ``normalized``.
 * ``normalized``       -- same images, centre-cropped + resized to 200 + JPEG q92.
-* ``laion_matched``    -- 3,826 LAION + 3,826 DALL·E 3, both downscaled to 512.
-* ``cross_generator``  -- 1,500 LAION vs DALL·E 3 / Midjourney v5 / SDXL / GigaGAN,
+* ``laion_matched``    -- 3,826 LAION + 3,826 DALL-E 3, both downscaled to 512.
+* ``cross_generator``  -- 1,500 LAION vs DALL-E 3 / Midjourney v5 / SDXL / GigaGAN,
                           all downscaled to 256.
 
 None of the configs apply the six problem-statement corruptions, so this is a
@@ -168,7 +168,7 @@ def eval_dataset(
 ) -> StreamingAugmentedDataset:
     """Re-iterable WildFake eval stream, same shape as `augmented_sid_dataset()`.
 
-    Defaults to ``config="default"`` = 4,998 COCO val2017 (real) + 8,843 DALL·E 3
+    Defaults to ``config="default"`` = 4,998 COCO val2017 (real) + 8,843 DALL-E 3
     (fake). It is a *benchmark* set, so ``augment=False`` by default -- pass
     ``augment=True`` to run the same six-corruption `ImageAugmenter` pipeline
     (`num_augmentations` / `variants_per_image` then behave as in
