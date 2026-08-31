@@ -5,7 +5,18 @@ The training contract here is built around paired samples of the form
 used for augmentation-reversal tasks.
 """
 
-from autoencoder.restorer import AutoencoderRestorer
+from autoencoder.restorer import (
+    AutoencoderRestorer,
+    AutoencoderRestorerImpl,
+    RestoredStream,
+    restore_dataset,
+)
 from autoencoder.trainer import AutoencoderTrainer
 
-__all__ = ["AutoencoderRestorer", "AutoencoderTrainer"]
+__all__ = [
+    "AutoencoderRestorer",
+    "AutoencoderRestorerImpl",
+    "AutoencoderTrainer",
+    "RestoredStream",
+    "restore_dataset",
+]
