@@ -9,7 +9,9 @@ dependencies = [
     "pillow>=10.0",
     "numpy>=1.26",
     "shared_types",
-    "normal_classifier",
+    "yolo",
+    "ensemble",
+    "autoencoder",
 ]
 
 [dependency-groups]
@@ -24,4 +26,6 @@ packages = ["src/web"]
 
 [tool.uv.sources]
 shared_types = { workspace = true }
-normal_classifier = { workspace = true }
+yolo = { workspace = true }
+ensemble = { workspace = true }
+autoencoder = { workspace = true }

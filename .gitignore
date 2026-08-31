@@ -1,11 +1,42 @@
+# --- python ---
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 .pytest_cache/
+.ipynb_checkpoints/
 
-# large model checkpoints — kept local, loaded via checkpoint= / $*_CHECKPOINT
-packages/models/swin/src/weights/*.pth
-packages/models/swin/src/weights/*.pt
-packages/models/dinov2/src/weights/*.pt
+# --- large model checkpoints ---
+# Kept local, loaded via checkpoint= / $*_CHECKPOINT / detector_common.locate_checkpoint.
 dino.pt
+packages/models/*/src/weights/*.pth
+packages/models/*/src/weights/*.pt
+packages/models/*/src/weights/*.zip
+packages/models/*/*.pt
+# keep the ones that ship with the repo:
+!packages/models/yolo/src/weights/yolo_augmented.pt
+!packages/models/autoencoder/src/weights/autoencoder_best.pt
+!packages/models/clip_vit_b32/src/weights/clip_vit_b32_best.pt
+
+# --- run outputs / caches / artifacts ---
+runs/
+sid_cache/
+wildfake_cache/
+*_cache/
+*_eval/
+*_eval_split/
+sid_yolo_smoke*/
+output_dir/
+log/
+predictions.json
+ensemble_scores.json
+ensemble_*.json
+ensemble_*.json.meta.pkl
+*.meta.pkl
+# cwd-relative weights drop dir + OpenSDI's ./weights
+weights/
+OpenSDI/
+
+# --- yolo/ultralytics scratch ---
+yolo*.pt
+!packages/models/yolo/src/weights/yolo_augmented.pt

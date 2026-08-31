@@ -35,21 +35,21 @@ def render_pipeline_results(result: PipelineResult) -> None:
                 use_container_width=True,
             )
         with columns[2]:
-            restored_caption = "3. Autoencoder-restored"
+            restored_caption = "3. Autoencoder-restored (what the fusion sub-model scores)"
             if result.restorer_is_placeholder:
                 restored_caption += " ⚠️ placeholder"
             st.image(result.restored_image, caption=restored_caption, use_container_width=True)
 
         if result.restorer_is_placeholder:
             st.info(
-                "The restoration step is a **placeholder** (a simple smoothing filter), "
-                "not a trained autoencoder. Swap it in `services/factory.py` once the real "
-                "model from `packages/models/autoencoder` is ready.",
+                "The trained autoencoder wasn't available in this environment, so the "
+                "restored panel shows a placeholder smoothing filter. The ensemble's "
+                "detection result is unaffected.",
                 icon="⚠️",
             )
         return
 
-    # Normal Classifier: no restoration stage.
+    # YOLO classifier: no restoration stage.
     columns = st.columns(2)
     with columns[0]:
         st.image(result.original_image, caption="1. Original", use_container_width=True)

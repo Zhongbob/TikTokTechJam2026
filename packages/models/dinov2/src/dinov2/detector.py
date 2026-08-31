@@ -37,6 +37,11 @@ DEFAULT_WEIGHTS_DIR = SCRIPT_DIR.parent / "weights"
 #: packages/models/dinov2/src/dinov2 -> repo root
 REPO_ROOT = SCRIPT_DIR.parents[4]
 
+#: Project HF bucket the default ``dino.pt`` is pulled from when it isn't already
+#: on disk (it's ~253 MiB, so it's git-ignored rather than committed).
+HF_BUCKET_ID = "Zhongbob2/TikTokTechJam"
+HF_BUCKET_CHECKPOINT = "dino.pt"
+
 DEFAULT_MODEL_NAME = "facebook/dinov2-small"
 _DEFAULT_CLASS_NAMES = {0: "real", 1: "synthetic"}
 _AI_HINTS = ("synthetic", "fake", "ai", "generated", "gan", "diffusion", "tampered", "aigc", "deepfake")
@@ -66,6 +71,27 @@ def _resolve_positive_index(class_names: dict[int, str], override: int | str | N
     if len(ai) == 1:
         return ai[0]
     return max(class_names)
+
+
+def _download_default_checkpoint(dest_dir: Path) -> Path:
+    """Fetch the default ``dino.pt`` from the project's HF bucket into ``dest_dir``.
+
+    Used by `DINOv2Detector.use_default` when no checkpoint is found locally.
+    """
+    from huggingface_hub import download_bucket_files
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / HF_BUCKET_CHECKPOINT
+    print(
+        f"[dinov2] no local checkpoint — downloading {HF_BUCKET_CHECKPOINT} from "
+        f"hf.co/buckets/{HF_BUCKET_ID} -> {dest}"
+    )
+    download_bucket_files(
+        bucket_id=HF_BUCKET_ID,
+        files=[(HF_BUCKET_CHECKPOINT, dest)],
+        raise_on_missing_files=True,
+    )
+    return dest
 
 
 def _build_dinov2_classifier(model_name: str, num_classes: int, dropout: float) -> Any:
@@ -197,7 +223,9 @@ class DINOv2Detector(ImageDetector):
         """``checkpoint=`` takes an explicit ``.pt`` path; otherwise ``dino*.pt``
         is searched for across the usual weight locations
         (``$DINOV2_CHECKPOINT``, the package ``weights/``, the repo checkout, the
-        cwd, ``/content``)."""
+        cwd, ``/content``). If nothing is found, the default checkpoint is
+        downloaded from the project's HF bucket into the package ``weights/``
+        folder."""
         if checkpoint is not None:
             return cls.from_checkpoint(Path(checkpoint).expanduser(), device=device, **kwargs)
         hit = locate_checkpoint(
@@ -205,11 +233,17 @@ class DINOv2Detector(ImageDetector):
             script_dir=SCRIPT_DIR, env_var="DINOV2_CHECKPOINT",
         )
         if hit is None:
-            looked = ", ".join(str(d) for d in candidate_weight_dirs(SCRIPT_DIR, env_var="DINOV2_CHECKPOINT"))
-            raise FileNotFoundError(
-                "DINOv2 checkpoint (dino.pt) not found. Pass checkpoint=<path>, set "
-                f"$DINOV2_CHECKPOINT, or drop it in one of: {looked}"
-            )
+            try:
+                hit = _download_default_checkpoint(DEFAULT_WEIGHTS_DIR)
+            except Exception as error:  # noqa: BLE001 - offline / HF unavailable
+                looked = ", ".join(
+                    str(d) for d in candidate_weight_dirs(SCRIPT_DIR, env_var="DINOV2_CHECKPOINT")
+                )
+                raise FileNotFoundError(
+                    "DINOv2 checkpoint (dino.pt) not found and the automatic "
+                    f"download failed ({error}). Pass checkpoint=<path>, set "
+                    f"$DINOV2_CHECKPOINT, or drop it in one of: {looked}"
+                ) from error
         return cls.from_checkpoint(hit, device=device, **kwargs)
 
     # --- scoring -----------------------------------------------------

@@ -1,111 +1,152 @@
-# TikTokTechJam2026
+# TikTokTechJam 2026 — AI-Generated Image Detection
 
-AI-generated-image detection, robust to common real-world transformations
-(compression, blur, resize, noise, color jitter, cropping). This repo is a
-single [uv](https://docs.astral.sh/uv/) workspace containing several
-projects that share a lockfile/environment but are run independently.
+Detects AI-generated images, robust to common real-world transformations
+(JPEG compression, blur, resize, noise, colour jitter, cropping).
+
+The model is an **ensemble** that combines five detectors:
+
+| member | what it is |
+|---|---|
+| `fusion` | Community-Forensics (whole-image synthetic) **+** OpenSDI/MaskCLIP (diffusion-inpaint localizer), max-combined |
+| `clip_vit_b32` | fine-tuned OpenAI CLIP ViT-B/32, prompt-similarity head |
+| `dinov2` | fine-tuned DINOv2 backbone + linear head |
+| `yolo` | Ultralytics YOLO classification fine-tuned on SID-Set |
+| `swin` | fine-tuned Swin-Tiny |
+
+Their per-image `p(AI)` scores are combined with `max`, a fitted linear
+`weighted` rule, or a tree-based `meta` classifier. Optionally an
+**autoencoder** restores each image before the `fusion` member sees it (the
+other members always get the original).
+
+The repo is one [uv](https://docs.astral.sh/uv/) workspace: many small packages
+that share a lockfile/environment.
+
+---
+
+## Quick start — score a folder of images
+
+```powershell
+# 1. install uv (once)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. install every workspace package into one environment
+uv sync --all-packages
+
+# 3. (for the fusion member) clone OpenSDI + fetch its weights, once
+uv run --package opensdi_detector python -m opensdi_detector.bootstrap --repo-root .
+
+# 4. run the ensemble over an image directory
+uv run --package ensemble python predict.py path/to/images -o predictions.json
+```
+
+`predict.py` writes a JSON list of `{"image_path", "pred"}`, where `pred` is
+`P(AI-generated)` in `[0, 1]`:
+
+```json
+[
+  {"image_path": "path/to/images/a.png", "pred": 0.9124},
+  {"image_path": "path/to/images/b.jpg", "pred": 0.0481}
+]
+```
+
+### `predict.py` options
+
+| flag | |
+|---|---|
+| `--method {max,mean,weighted,meta}` | combiner (default `max`) |
+| `--meta-file ensemble_meta.json` | load a fitted `EnsembleTrainer` bundle → `method="meta"` |
+| `--members clip_vit_b32,dinov2,yolo,swin` / `--no-fusion` | run a subset |
+| `--opensdi-repo`, `--dino-checkpoint`, `--swin-checkpoint` | checkpoint paths |
+| `--device`, `--threshold`, `--use-autoencoder`, `--limit`, `--verdict` | |
+
+`python predict.py --help` for everything.
+
+### Checkpoints
+
+Each detector loads its own weights on first use. In priority order:
+`checkpoint=` / `--*-checkpoint`, then `$<PKG>_CHECKPOINT`, then the package's
+`src/weights/` folder, the repo root, the cwd, `/content`. Files over ~100 MB
+are **not** committed. `dino.pt` (~253 MB) is fetched automatically from the
+project's Hugging Face bucket (`Zhongbob2/TikTokTechJam`) into
+`packages/models/dinov2/src/weights/` when it isn't found locally; override with
+a path or `$DINOV2_CHECKPOINT`.
+
+---
 
 ## Repository layout
 
 ```text
+predict.py                Main entrypoint: score an image folder -> predictions.json
 apps/
-  web/                    Streamlit demo UI (upload/transform/detect pipeline)
+  web/                    Streamlit demo UI (upload -> transform -> restore -> detect)
 packages/
-  data/                   CLI: builds autoencoder training pairs (clean/augmented -> clean)
+  data/                   SID-Set streaming + augmentation + WildFake eval dataset
   models/
-    autoencoder/          Restoration model (not yet implemented)
-    ensemble/              Ensemble AI-detector model (not yet implemented)
-    our_classifier/        Custom classifier model (not yet implemented)
+    ensemble/             THE MODEL: fusion + clip + dinov2 + yolo + swin, combined
+    fusion/               Community-Forensics + OpenSDI sub-combiner
+    community_forensics/  fusion member (HF ViT)
+    opensdi_detector/     fusion member (MaskCLIP) + bootstrap script
+    clip_vit_b32/ dinov2/ yolo/ swin/   trained single-model detectors (ensemble members)
+    autoencoder/          augmentation-reversal restoration model + trainer
 libs/
-  shared_types/           Shared dataclasses/enums/interfaces (not run directly)
-  image_io/                Shared image loading/discovery helpers (not run directly)
+  detector_common/        ImageDetector base, CombinerDetector/CombinerTrainer, MetaClassifier,
+                          checkpoint resolution
+  shared_types/           shared dataclasses / Protocols
+  image_io/               image loading helpers
 ```
 
-Every project has its own `pyproject.toml` and is a member of the root
-`[tool.uv.workspace]`, so `uv` resolves them all together into one shared
-environment, but you `run`/`sync` **from inside the specific project's
-folder** so uv knows which one is "active."
+Every package has its own `pyproject.toml` and is a `[tool.uv.workspace]`
+member. `uv sync --all-packages` installs them all; or `cd <package>` +
+`uv sync` for just one.
 
-## 1. One-time setup
+---
 
-Install `uv` (skip if you already have it — check with `uv --version`):
+## Training the combiner
 
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+The `max` combiner needs no training. `weighted` and `meta` are fitted with
+`ensemble.EnsembleTrainer` on labelled data (augmented SID-Set):
+
+```python
+from ensemble import EnsembleTrainer
+
+tr = EnsembleTrainer.use_default(opensdi_repo_dir="OpenSDI",
+                                 member_kwargs={"dinov2": {"checkpoint": "dino.pt"}})
+
+Xtr, ytr = tr.member_score_matrix(train_samples)   # runs all 5 members once — cache this
+Xva, yva = tr.member_score_matrix(val_samples)
+
+tr.compare_methods(X_train=Xtr, y_train=ytr, X_val=Xva, y_val=yva,
+                   meta_kinds=("tree", "gboost"))   # max vs weighted vs meta
+
+tr.fit_meta_classifier(X=Xtr, y=ytr, kind="gboost")  # or tr.optimal_weights(X=Xtr, y=ytr)
+tr.save("ensemble_meta.json")                        # -> reuse with predict.py --meta-file
 ```
 
-Restart your terminal afterward so `uv` is on `PATH`.
+Training data lives in `packages/data` — `augmented_sid_dataset(...)` (SID-Set,
+streamed + augmented) and `eval_dataset(...)` (the WildFake benchmark).
+**Evaluation is under augmentation** — that's the scored metric.
 
-## 2. Running a project
+---
 
-The general pattern is:
-
-```powershell
-cd <project-folder>     # the folder containing that project's pyproject.toml
-uv sync                 # installs/updates that project's dependencies
-uv run <command>         # runs it inside the synced environment
-```
-
-`uv sync`/`uv run` from inside a project folder only need to be run again
-after you pull changes that touch dependencies — otherwise `uv run` alone is
-enough, since it re-syncs automatically if anything is stale.
-
-> Running `uv sync`/`uv run` from the **repo root** instead only installs the
-> root workspace project's own dependencies (it has none), not any member's —
-> that's why step 2 says `cd` into the specific project first. To stay at the
-> root instead, add `--package <name>` to any `uv` command, e.g.
-> `uv run --package web streamlit run apps/web/src/web/main.py`.
-
-### apps/web — Streamlit demo UI
-
-Not a plain script — it must be launched via `streamlit run`, not
-`uv run python main.py`:
+## Web demo
 
 ```powershell
 cd apps/web
-uv run streamlit run src/web/main.py
-```
-
-Opens at `http://localhost:8501`. Stop with `Ctrl+C`.
-
-### packages/data — dataset generation CLI
-
-An `argparse` CLI with two subcommands (`local` folder or streamed `sid`
-subset). Run as a module so its internal `data.*` imports resolve:
-
-```powershell
-cd packages/data
 uv sync
-uv run src/data/main.py --output ../../images/output local --input ../../images/input
+uv run streamlit run src/web/main.py     # http://localhost:8501
 ```
 
-or, streaming a balanced subset from the SID-Set dataset:
+Pick **YOLO Classifier** (direct) or **Ensemble (Transform Reversal)** (the full
+ensemble; shows the autoencoder-restored image the fusion sub-model scores),
+choose an image, apply real-world transforms, see the verdict.
 
-```powershell
-uv run python -m data.main --output outputs/sid --num-augmentations 6 --backend process --workers 4 sid --images-per-label 100 --hf-token <YOUR_HF_TOKEN>
-```
-
-See [packages/data/README.md](packages/data/README.md) for the full CLI
-reference and output format.
-
-### packages/models/{autoencoder,ensemble,our_classifier}
-
-Scaffolding only — their `main.py` files are currently empty placeholders,
-nothing to run yet.
-
-### libs/shared_types, libs/image_io
-
-Shared libraries consumed by the other projects (via
-`[tool.uv.sources] ... = { workspace = true }`), not standalone
-programs — there's nothing to `uv run` here directly.
+---
 
 ## Common uv commands
 
 | Command | What it does |
 |---|---|
-| `uv sync` | Install/update the current project's dependencies (run from its folder) |
-| `uv sync --all-packages` | Install every workspace member's dependencies into the shared environment |
-| `uv run <cmd>` | Run `<cmd>` inside the synced environment, auto-syncing first if needed |
-| `uv run --package <name> <cmd>` | Run `<cmd>` for a specific workspace member without `cd`-ing into it |
-| `uv add <dep>` | Add a dependency to the current project's `pyproject.toml` and sync it |
-| `uv run pytest` | Run a project's test suite (e.g. from `apps/web`) |
+| `uv sync --all-packages` | Install every workspace package into the shared environment |
+| `uv run --package <name> <cmd>` | Run `<cmd>` with `<name>`'s dependencies available |
+| `uv run --package <name> pytest` | Run a package's tests |
+| `uv add <dep>` | Add a dependency to the current package (run from its folder) |

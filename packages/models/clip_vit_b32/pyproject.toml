@@ -10,13 +10,13 @@ dependencies = [
     "ftfy>=6.0",
     "regex>=2023.0",
     "pillow>=10.0",
+    # The model backbone is OpenAI CLIP, which isn't published on PyPI as `clip`
+    # — pulled straight from GitHub (see [tool.uv.sources] below). Imported
+    # lazily; from_checkpoint raises a clear error if it's somehow missing.
+    "clip",
     "shared_types",
     "detector_common",
 ]
-
-# The model backbone is OpenAI CLIP, which is not on PyPI as `clip`:
-#   pip install git+https://github.com/openai/CLIP.git
-# (imported lazily; from_checkpoint raises a clear error if it's missing.)
 
 [build-system]
 requires = ["hatchling"]
@@ -26,5 +26,6 @@ build-backend = "hatchling.build"
 packages = ["src/clip_vit_b32"]
 
 [tool.uv.sources]
+clip = { git = "https://github.com/openai/CLIP.git" }
 shared_types = { workspace = true }
 detector_common = { workspace = true }

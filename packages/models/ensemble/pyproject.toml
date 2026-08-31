@@ -1,7 +1,7 @@
 [project]
 name = "ensemble"
 version = "0.1.0"
-description = "Ensemble detector: the fusion model + convnext_aigc + clip_vit_b32 + dinov2 + normal_classifier + swin, combined via detector_common.CombinerDetector (max / mean / weighted / meta). Optional autoencoder restoration for the fusion member."
+description = "Ensemble detector: the fusion model + clip_vit_b32 + dinov2 + yolo + swin, combined via detector_common.CombinerDetector (max / mean / weighted / meta). Optional autoencoder restoration for the fusion member."
 requires-python = ">=3.11"
 
 dependencies = [
@@ -10,10 +10,9 @@ dependencies = [
     "detector_common",
     "shared_types",
     "fusion",
-    "convnext_aigc",
     "clip_vit_b32",
     "dinov2",
-    "normal_classifier",
+    "yolo",
     "swin",
     "autoencoder",
 ]
@@ -29,9 +28,8 @@ packages = ["src/ensemble"]
 detector_common = { workspace = true }
 shared_types = { workspace = true }
 fusion = { workspace = true }
-convnext_aigc = { workspace = true }
 clip_vit_b32 = { workspace = true }
 dinov2 = { workspace = true }
-normal_classifier = { workspace = true }
+yolo = { workspace = true }
 swin = { workspace = true }
 autoencoder = { workspace = true }

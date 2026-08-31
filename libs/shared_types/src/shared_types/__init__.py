@@ -1,5 +1,4 @@
 from shared_types.augmentation import AugmentationRecord, ImageInput, SourceMetadata
-from shared_types.dataset import DatasetSample
 from shared_types.detection import DetectionResult, EnsembleMemberResult
 from shared_types.interfaces import AutoencoderRestorer, EnsembleDetector
 from shared_types.training import (
@@ -35,7 +34,6 @@ __all__ = [
     "AugmentationRecord",
     "ImageInput",
     "SourceMetadata",
-    "DatasetSample",
     "DetectionResult",
     "EnsembleMemberResult",
     "AutoencoderRestorer",

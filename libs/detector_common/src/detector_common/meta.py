@@ -241,7 +241,14 @@ def default_estimator(kind: str = "tree", **kwargs: Any) -> Any:
                       class_weight="balanced_subsample")
         params.update(kwargs)
         return RandomForestClassifier(**params)
-    if kind in ("gboost", "gb", "hgb", "boost"):
+    if kind in ("gboost", "gb", "boost", "gradientboosting"):
+        # the classic GBT — exposes feature_importances_ (HistGBC does not)
+        from sklearn.ensemble import GradientBoostingClassifier
+
+        params = dict(n_estimators=200, max_depth=3, learning_rate=0.1, subsample=0.9)
+        params.update(kwargs)
+        return GradientBoostingClassifier(**params)
+    if kind in ("hgboost", "hgb", "histgb"):
         from sklearn.ensemble import HistGradientBoostingClassifier
 
         params = dict(max_depth=3, max_iter=200, learning_rate=0.1)
@@ -255,7 +262,7 @@ def default_estimator(kind: str = "tree", **kwargs: Any) -> Any:
         params.update(kwargs)
         return XGBClassifier(**params)
     raise ValueError(
-        "kind must be one of: tree, sklearn-tree, forest, gboost, xgboost "
+        "kind must be one of: tree, sklearn-tree, forest, gboost, hgboost, xgboost "
         f"(got {kind!r})"
     )
 

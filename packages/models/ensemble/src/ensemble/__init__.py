@@ -1,10 +1,9 @@
 """Ensemble model — the fusion model + the standalone trained classifiers.
 
 `EnsembleDetector` (`detector_common.CombinerDetector` subclass): members are
-``fusion`` (CF + OpenSDI), ``convnext_aigc``, ``clip_vit_b32``, ``dinov2``,
-``normal_classifier`` and ``swin``; ``method`` ∈ ``max`` / ``mean`` /
-``weighted`` / ``meta``. ``use_autoencoder=True`` restores the image before the
-fusion member only.
+``fusion`` (CF + OpenSDI), ``clip_vit_b32``, ``dinov2``, ``yolo``
+and ``swin``; ``method`` ∈ ``max`` / ``mean`` / ``weighted`` / ``meta``.
+``use_autoencoder=True`` restores the image before the fusion member only.
 
 `EnsembleTrainer` (`detector_common.CombinerTrainer` subclass) fits the
 ``weighted`` weights and the tree-based ``meta`` classifier.
@@ -12,6 +11,8 @@ fusion member only.
 
 from ensemble.detector import (
     DEFAULT_MEMBERS,
+    DEFAULT_WEIGHTED_THRESHOLD,
+    DEFAULT_WEIGHTS,
     EnsembleDetector,
     build_default_ensemble_members,
 )
@@ -22,4 +23,6 @@ __all__ = [
     "EnsembleTrainer",
     "build_default_ensemble_members",
     "DEFAULT_MEMBERS",
+    "DEFAULT_WEIGHTS",
+    "DEFAULT_WEIGHTED_THRESHOLD",
 ]

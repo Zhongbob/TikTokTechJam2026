@@ -22,7 +22,6 @@ from shared_types.transforms import (
     TransformType,
 )
 
-from web.services.dataset import load_sample_manifest, load_sample_image
 from web.services.methods import METHOD_DESCRIPTIONS, METHOD_LABELS, METHODS
 
 
@@ -41,34 +40,14 @@ def render_method_picker() -> str:
 
 
 def render_image_source_picker() -> tuple[Image.Image, str] | None:
-    """Renders the upload-vs-sample-dataset picker.
-
-    Returns (image, source_label) for whichever source currently has a
-    valid image selected, or None if nothing is selected yet.
-    """
+    """Renders the image uploader. Returns (image, source_label), or None if
+    nothing is uploaded yet."""
     st.sidebar.subheader("1. Choose an image")
-    source_mode = st.sidebar.radio(
-        "Image source", ["Upload your own", "Sample dataset"], label_visibility="collapsed"
-    )
-
-    if source_mode == "Upload your own":
-        uploaded_file = st.sidebar.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
-        if uploaded_file is None:
-            return None
-        image = Image.open(uploaded_file).convert("RGB")
-        return image, f"upload:{uploaded_file.name}"
-
-    manifest = load_sample_manifest()
-    if not manifest:
-        st.sidebar.warning("No sample dataset images available.")
+    uploaded_file = st.sidebar.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
+    if uploaded_file is None:
         return None
-    labels = [f"{s.img_id} ({s.label_name})" for s in manifest]
-    selected_index = st.sidebar.selectbox(
-        "Sample image", range(len(manifest)), format_func=lambda i: labels[i]
-    )
-    sample = manifest[selected_index]
-    image = load_sample_image(sample)
-    return image, f"sample:{sample.img_id}"
+    image = Image.open(uploaded_file).convert("RGB")
+    return image, f"upload:{uploaded_file.name}"
 
 
 def _render_transform_params(transform_type: TransformType) -> TransformSpec:
@@ -146,8 +125,3 @@ def render_transform_pipeline_controls() -> TransformPipeline:
 
 def render_run_button() -> bool:
     return st.sidebar.button("Run Detection", type="primary", use_container_width=True)
-
-
-def render_randomize_button() -> bool:
-    st.sidebar.subheader("3. Or, skip the setup")
-    return st.sidebar.button("🎲 Randomize (sample image + transform)", use_container_width=True)

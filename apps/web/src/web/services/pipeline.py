@@ -8,7 +8,7 @@ from shared_types.detection import DetectionResult
 from shared_types.transforms import TransformPipeline
 
 from web.services.factory import get_detector, get_restorer
-from web.services.methods import NORMAL_CLASSIFIER, TRANSFORM_REVERSAL
+from web.services.methods import YOLO_CLASSIFIER, TRANSFORM_REVERSAL
 from web.services.transforms import apply_transform_pipeline
 
 
@@ -57,9 +57,9 @@ def run_pipeline(
     transformed_image = apply_transform_pipeline(image, pipeline)
     augmentation_record = build_augmentation_record(source_label, pipeline)
 
-    if method == NORMAL_CLASSIFIER:
+    if method == YOLO_CLASSIFIER:
         # No restoration stage — the classifier runs on the transformed image.
-        detection_result = get_detector(NORMAL_CLASSIFIER).predict(transformed_image)
+        detection_result = get_detector(YOLO_CLASSIFIER).predict(transformed_image)
         return PipelineResult(
             original_image=image,
             transformed_image=transformed_image,
@@ -68,13 +68,16 @@ def run_pipeline(
             augmentation_record=augmentation_record,
             detection_result=detection_result,
             restorer_is_placeholder=False,
-            method=NORMAL_CLASSIFIER,
+            method=YOLO_CLASSIFIER,
         )
 
-    # transform_reversal: restore first, then detect on the restored image.
+    # transform_reversal: the ensemble scores the *transformed* image directly —
+    # its fusion sub-model restores internally (use_autoencoder=True), every
+    # other member sees the original. We restore here too, only to SHOW the
+    # user what that restoration looks like.
     restorer = get_restorer()
     restored_image = restorer.restore(transformed_image)
-    detection_result = get_detector(TRANSFORM_REVERSAL).predict(restored_image)
+    detection_result = get_detector(TRANSFORM_REVERSAL).predict(transformed_image)
 
     return PipelineResult(
         original_image=image,

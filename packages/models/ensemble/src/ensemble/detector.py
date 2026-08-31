@@ -6,11 +6,10 @@ Members (default, in order):
 1. **fusion** (`fusion.FusionDetector`) — CF + OpenSDI (a `CombinerDetector`
    itself). Optionally fed an autoencoder-*restored* image (see
    ``use_autoencoder``); every other member still sees the original image.
-2. **convnext_aigc** (`convnext_aigc.ConvNextAIGCDetector`)
-3. **clip_vit_b32** (`clip_vit_b32.ClipViTB32Detector`)
-4. **dinov2** (`dinov2.DINOv2Detector`)
-5. **normal_classifier** (`normal_classifier.NormalClassifierDetector`)
-6. **swin** (`swin.SwinDetector`)
+2. **clip_vit_b32** (`clip_vit_b32.ClipViTB32Detector`)
+3. **dinov2** (`dinov2.DINOv2Detector`)
+4. **yolo** (`yolo.YoloDetector`)
+5. **swin** (`swin.SwinDetector`)
 
 The combination logic (``method`` ∈ max / mean / weighted / meta, per-member
 results, ``predict`` / ``evaluate``) is inherited from
@@ -32,8 +31,13 @@ from detector_common import CombinerDetector
 from PIL import Image
 
 DEFAULT_MEMBERS = (
-    "fusion", "convnext_aigc", "clip_vit_b32", "dinov2", "normal_classifier", "swin",
+    "fusion", "clip_vit_b32", "dinov2", "yolo", "swin",
 )
+
+#: weights fitted with EnsembleTrainer.optimal_weights on augmented SID, in
+#: DEFAULT_MEMBERS order. threshold ~0.665 goes with them.
+DEFAULT_WEIGHTS = [0.0833, 0.1667, 0.1667, 0.4167, 0.1667]
+DEFAULT_WEIGHTED_THRESHOLD = 0.665
 
 
 class _RestoreBeforePredict:
@@ -63,10 +67,6 @@ def _build_member(name: str, *, device: str, **kwargs: Any) -> Any:
     ``use_default`` — e.g. ``checkpoint=`` / ``positive_class=`` / ``flip=``."""
     if name == "fusion":
         raise ValueError("build the 'fusion' member via build_default_ensemble_members")
-    if name == "convnext_aigc":
-        from convnext_aigc import ConvNextAIGCDetector
-
-        return ConvNextAIGCDetector.use_default(device=device, **kwargs)
     if name == "clip_vit_b32":
         from clip_vit_b32 import ClipViTB32Detector
 
@@ -75,10 +75,10 @@ def _build_member(name: str, *, device: str, **kwargs: Any) -> Any:
         from dinov2 import DINOv2Detector
 
         return DINOv2Detector.use_default(device=device, **kwargs)
-    if name == "normal_classifier":
-        from normal_classifier import NormalClassifierDetector
+    if name == "yolo":
+        from yolo import YoloDetector
 
-        return NormalClassifierDetector.use_default(**kwargs)
+        return YoloDetector.use_default(**kwargs)
     if name == "swin":
         from swin import SwinDetector
 
@@ -129,7 +129,7 @@ def build_default_ensemble_members(
 
 
 class EnsembleDetector(CombinerDetector):
-    """Fusion + convnext + clip + dinov2 + normal_classifier + swin, combined."""
+    """Fusion + clip_vit_b32 + dinov2 + yolo + swin, combined."""
 
     name = "ensemble-max"
     name_prefix = "ensemble"
@@ -141,7 +141,7 @@ class EnsembleDetector(CombinerDetector):
         *,
         device: str = "auto",
         method: str = "max",
-        weights: list[float] | None = [0.0833, 0.0, 0.1667, 0.1667, 0.4167, 0.1667],
+        weights: list[float] | None = None,
         decision_threshold: float | None = None,
         include: Sequence[str] = DEFAULT_MEMBERS,
         use_autoencoder: bool = False,
@@ -158,6 +158,11 @@ class EnsembleDetector(CombinerDetector):
         ``use_autoencoder=True`` runs the autoencoder over the image before the
         **fusion** member only. ``member_kwargs={"dinov2": {"checkpoint": ...}}``
         overrides a member's checkpoint / options.
+
+        ``method="weighted"`` with no ``weights`` uses the SID-fitted
+        `DEFAULT_WEIGHTS` / `DEFAULT_WEIGHTED_THRESHOLD` (valid only for the
+        default member set); for ``"meta"`` load a fitted bundle with
+        ``EnsembleTrainer.load(...).as_detector(method="meta")``.
         """
         members = build_default_ensemble_members(
             device=device,
@@ -169,4 +174,8 @@ class EnsembleDetector(CombinerDetector):
             opensdi_repo_dir=opensdi_repo_dir,
             member_kwargs=member_kwargs,
         )
+        if method == "weighted" and weights is None and list(include) == list(DEFAULT_MEMBERS):
+            weights = list(DEFAULT_WEIGHTS)
+            if decision_threshold is None:
+                decision_threshold = DEFAULT_WEIGHTED_THRESHOLD
         return cls(members, method=method, weights=weights, decision_threshold=decision_threshold)

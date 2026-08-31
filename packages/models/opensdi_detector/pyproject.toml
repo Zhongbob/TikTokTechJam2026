@@ -10,6 +10,16 @@ dependencies = [
     "numpy>=1.26",
     "pillow>=10.0",
     "huggingface-hub>=0.20",
+    # MaskCLIP's model code (loaded from the cloned OpenSDI repo) imports these.
+    # IMDLBenCo's own numpy<2 / albumentations==1.3.0 pins are overridden in the
+    # root pyproject's [tool.uv] override-dependencies.
+    "IMDLBenCo",
+    "timm",
+    "ftfy",
+    "regex",
+    "omegaconf",
+    "clip",
+    "setuptools<81",  # OpenSDI / OpenAI-CLIP import pkg_resources, dropped in setuptools 81 and absent from the 3.14 venv
     "shared_types",
     "detector_common",
 ]
