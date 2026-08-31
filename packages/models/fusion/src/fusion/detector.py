@@ -42,6 +42,12 @@ from shared_types.detection import DetectionResult, EnsembleMemberResult
 
 _COMBINE_MODES = {"max", "mean", "weighted", "meta"}
 
+#: Module-level default for the OpenSDI clone used by ``FusionDetector.use_default``.
+#: Set it once (``fusion.detector.DEFAULT_OPENSDI_REPO_DIR = "/content/OpenSDI"``)
+#: instead of passing ``opensdi_repo_dir=`` every call. ``None`` -> fall back to
+#: ``$OPENSDI_REPO`` / ``/content/OpenSDI`` (handled by OpenSDIDetector).
+DEFAULT_OPENSDI_REPO_DIR: str | Path | None = None
+
 
 class FusionDetector(ImageDetector):
     """Combines member detectors' p(ai) into one score + verdict."""
@@ -94,6 +100,8 @@ class FusionDetector(ImageDetector):
         combine: str = "max",
         decision_threshold: float = 0.5,
         opensdi_repo_dir: str | Path | None = None,
+        opensdi_weights_dir: str | Path | None = None,
+        opensdi_checkpoint: str | Path | None = None,
         opensdi_kwargs: dict[str, Any] | None = None,
     ) -> "FusionDetector":
         """Build the default fusion: Community-Forensics + OpenSDI.
@@ -101,8 +109,12 @@ class FusionDetector(ImageDetector):
         Community-Forensics downloads its weights on first use. OpenSDI needs a
         one-time ``opensdi_detector.setup_opensdi()`` (clones the repo, installs
         ``IMDLBenCo`` + OpenAI ``clip``, downloads the ~3.1 GB MaskCLIP
-        checkpoint); after that ``opensdi_repo_dir`` can be omitted (it reads
-        ``OPENSDI_REPO``).
+        checkpoint).
+
+        Point at the OpenSDI clone with, in priority order: ``opensdi_repo_dir=``
+        here, the module default ``fusion.detector.DEFAULT_OPENSDI_REPO_DIR``,
+        the ``OPENSDI_REPO`` env var, or ``/content/OpenSDI``. ``opensdi_weights_dir``
+        / ``opensdi_checkpoint`` override where the ``.pth`` is found.
 
         OpenSDI is wired as a tamper *localizer*: ``score_mode="mask"`` /
         ``mask_reduce="max"`` ("is any region flagged as edited?"). Override via
@@ -111,14 +123,19 @@ class FusionDetector(ImageDetector):
         from community_forensics import CommunityForensicsDetector
         from opensdi_detector import OpenSDIDetector
 
-        score_kwargs: dict[str, Any] = {"score_mode": "mask", "mask_reduce": "max"}
-        score_kwargs.update(opensdi_kwargs or {})
+        opensdi_args: dict[str, Any] = {"score_mode": "mask", "mask_reduce": "max"}
+        repo = opensdi_repo_dir or DEFAULT_OPENSDI_REPO_DIR
+        if repo is not None:
+            opensdi_args["repo_dir"] = repo
+        if opensdi_weights_dir is not None:
+            opensdi_args["weights_dir"] = opensdi_weights_dir
+        if opensdi_checkpoint is not None:
+            opensdi_args["checkpoint"] = opensdi_checkpoint
+        opensdi_args.update(opensdi_kwargs or {})
 
         members = [
             CommunityForensicsDetector.use_default(device=device),
-            OpenSDIDetector.use_default(
-                device=device, repo_dir=opensdi_repo_dir, **score_kwargs
-            ),
+            OpenSDIDetector.use_default(device=device, **opensdi_args),
         ]
         return cls(members, combine=combine, decision_threshold=decision_threshold)
 

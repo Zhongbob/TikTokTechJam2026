@@ -45,6 +45,51 @@ from PIL import Image
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_WEIGHTS_DIR = SCRIPT_DIR.parent / "weights"
 
+#: Places `use_default()` looks for an OpenSDI clone, after ``repo_dir=`` and the
+#: ``OPENSDI_REPO`` env var. Colab's default is ``/content/OpenSDI``.
+_REPO_DIR_GUESSES = ("/content/OpenSDI", "OpenSDI", "../OpenSDI", "~/OpenSDI")
+
+
+def _looks_like_opensdi(path: Path) -> bool:
+    return (path / "model" / "MaskCLIP.py").is_file()
+
+
+def _resolve_repo_dir(repo_dir: str | os.PathLike[str] | None) -> str | None:
+    """First existing OpenSDI clone among: the arg, ``$OPENSDI_REPO``, then the
+    common guesses. ``None`` if none look like the repo."""
+    candidates: list[Path] = []
+    if repo_dir:
+        candidates.append(Path(repo_dir).expanduser())
+    env = os.environ.get("OPENSDI_REPO")
+    if env:
+        candidates.append(Path(env).expanduser())
+    candidates += [Path(g).expanduser() for g in _REPO_DIR_GUESSES]
+    for candidate in candidates:
+        if candidate.is_dir() and _looks_like_opensdi(candidate):
+            return str(candidate.resolve())
+    return None
+
+
+def _resolve_checkpoint(
+    checkpoint: str | os.PathLike[str] | None,
+    weights_dir: str | os.PathLike[str] | None,
+    checkpoint_name: str,
+) -> str | None:
+    """An explicit ``checkpoint=`` path, else the first MaskCLIP ``.pth`` in
+    ``weights_dir`` (default: this package's ``src/weights/``). Never matches the
+    MAE weights file."""
+    if checkpoint:
+        path = Path(checkpoint).expanduser()
+        return str(path.resolve()) if path.is_file() else None
+    wdir = Path(weights_dir).expanduser() if weights_dir else DEFAULT_WEIGHTS_DIR
+    if not wdir.is_dir():
+        return None
+    for pattern in (checkpoint_name, "MaskCLIP*.pth", "maskclip*.pth", "*opensdi*.pth"):
+        matches = sorted(p for p in wdir.glob(pattern) if "mae_pretrain" not in p.name)
+        if matches:
+            return str(matches[-1].resolve())
+    return None
+
 # CLIP normalisation, matching OpenSDI test.py's post_transforms().
 _CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 _CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
@@ -229,27 +274,48 @@ class OpenSDIDetector(ImageDetector):
         cls,
         *,
         repo_dir: str | os.PathLike[str] | None = None,
+        weights_dir: str | os.PathLike[str] | None = None,
+        checkpoint: str | os.PathLike[str] | None = None,
         checkpoint_name: str = "maskclip_opensdi.pth",
         device: str = "auto",
         **score_kwargs: Any,
     ) -> "OpenSDIDetector":
-        repo_dir = repo_dir or os.environ.get("OPENSDI_REPO")
-        checkpoint = DEFAULT_WEIGHTS_DIR / checkpoint_name
-        if not checkpoint.is_file():
-            # fall back to any MaskCLIP*.pth the bootstrap script dropped in
-            matches = sorted(DEFAULT_WEIGHTS_DIR.glob("MaskCLIP*.pth"))
-            if matches:
-                checkpoint = matches[-1]
-        if not checkpoint.is_file() or not repo_dir:
-            raise FileNotFoundError(
-                "OpenSDI needs a checkpoint and the official repo. Run "
-                "`python -m opensdi_detector.bootstrap` (or "
-                "`from opensdi_detector import setup_opensdi; setup_opensdi()`), "
-                "which clones https://github.com/iamwangyabin/OpenSDI and downloads "
-                f"the MaskCLIP weights to {DEFAULT_WEIGHTS_DIR}. Otherwise set "
-                "OPENSDI_REPO=<clone> and pass repo_dir=/checkpoint yourself."
+        """Load MaskCLIP from a local setup.
+
+        ``repo_dir``: a clone of ``iamwangyabin/OpenSDI`` — falls back to
+        ``$OPENSDI_REPO`` then ``/content/OpenSDI`` / ``./OpenSDI``.
+        ``checkpoint``: explicit ``.pth`` path; otherwise the first MaskCLIP
+        ``.pth`` in ``weights_dir`` (default: this package's ``src/weights/``).
+        Run ``opensdi_detector.setup_opensdi()`` to create all of this.
+        """
+        resolved_repo = _resolve_repo_dir(repo_dir)
+        resolved_ckpt = _resolve_checkpoint(checkpoint, weights_dir, checkpoint_name)
+
+        problems: list[str] = []
+        if resolved_repo is None:
+            tried = [str(repo_dir)] if repo_dir else []
+            tried += [os.environ.get("OPENSDI_REPO", "")]
+            tried += list(_REPO_DIR_GUESSES)
+            problems.append(
+                "  - OpenSDI repo not found (looked in: "
+                + ", ".join(t for t in tried if t)
+                + "). Pass repo_dir=<clone of iamwangyabin/OpenSDI>, set "
+                "OPENSDI_REPO, or run opensdi_detector.setup_opensdi()."
             )
-        return cls.from_checkpoint(checkpoint, repo_dir=repo_dir, device=device, **score_kwargs)
+        if resolved_ckpt is None:
+            wdir = Path(weights_dir).expanduser() if weights_dir else DEFAULT_WEIGHTS_DIR
+            present = sorted(p.name for p in wdir.glob("*.pth")) if wdir.is_dir() else []
+            problems.append(
+                f"  - MaskCLIP checkpoint not found in {wdir} "
+                f"(contains: {present or 'nothing'}). Pass checkpoint=<path.pth>, "
+                "weights_dir=<dir>, or run opensdi_detector.setup_opensdi()."
+            )
+        if problems:
+            raise FileNotFoundError("OpenSDI setup incomplete:\n" + "\n".join(problems))
+
+        return cls.from_checkpoint(
+            resolved_ckpt, repo_dir=resolved_repo, device=device, **score_kwargs
+        )
 
     # --- scoring -----------------------------------------------------
 
