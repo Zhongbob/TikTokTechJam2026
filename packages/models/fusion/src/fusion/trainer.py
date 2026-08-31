@@ -354,18 +354,51 @@ class FusionTrainer(ClassifierTrainableModel):
         )
 
     def evaluate(
-        self, samples: Iterable[LabeledImageSample], **kwargs: Any
+        self,
+        samples: Iterable[LabeledImageSample],
+        *,
+        method: str | None = None,
+        decision_threshold: float | None = None,
+        X: Sequence[Sequence[float]] | None = None,
+        y: Sequence[int] | None = None,
+        **kwargs: Any,
     ) -> dict[str, float]:
-        """Score the *current* fit on held-out ``samples``. Uses the meta
-        classifier if one is fitted, else the fitted weights."""
-        X, y = self.member_score_matrix(samples)
-        if self.meta_ is not None:
-            scores = self.meta_.predict_fake_proba(X)
-            return _classify_report(scores, y, self.meta_threshold_)
-        if self.weights_ is None or self.threshold_ is None:
-            raise RuntimeError("nothing fitted yet — call train() / fit_meta_classifier() first")
-        fused = [_fuse(row, self.weights_) for row in X]
-        return _classify_report(fused, y, self.threshold_)
+        """Score one fusion method on ``samples`` (or a precomputed ``X, y``).
+
+        ``method``: ``"max"`` (no fitting needed — the default OR-rule at
+        ``DEFAULT_MAX_THRESHOLD``), ``"mean"``, ``"weighted"`` (needs
+        ``optimal_weights()``/``train()``), or ``"meta"`` (needs
+        ``fit_meta_classifier()``). Omit it to use whatever is fitted
+        (meta > weighted), falling back to ``"max"``.
+        """
+        if X is None or y is None:
+            X, y = self.member_score_matrix(samples)
+        X = [list(map(float, r)) for r in X]
+        y = [int(v) for v in y]
+
+        if method is None:
+            method = ("meta" if self.meta_ is not None
+                      else "weighted" if self.weights_ is not None
+                      else "max")
+
+        if method == "meta":
+            if self.meta_ is None:
+                raise RuntimeError("method='meta' but no meta classifier — call fit_meta_classifier() first")
+            thr = self.meta_threshold_ if decision_threshold is None else float(decision_threshold)
+            return _classify_report(self.meta_.predict_fake_proba(X), y, thr)
+        if method == "weighted":
+            if self.weights_ is None or self.threshold_ is None:
+                raise RuntimeError("method='weighted' but nothing fitted — call optimal_weights()/train() first")
+            thr = self.threshold_ if decision_threshold is None else float(decision_threshold)
+            return _classify_report([_fuse(r, self.weights_) for r in X], y, thr)
+        if method in ("max", "mean"):
+            from fusion.detector import DEFAULT_MAX_THRESHOLD
+
+            fused = [max(r) for r in X] if method == "max" else [sum(r) / len(r) for r in X]
+            default_thr = DEFAULT_MAX_THRESHOLD if method == "max" else 0.5
+            thr = default_thr if decision_threshold is None else float(decision_threshold)
+            return _classify_report(fused, y, thr)
+        raise ValueError("method must be 'max', 'mean', 'weighted', or 'meta'")
 
     # --- the other real job: fit a tree-based meta-classifier -----
 
