@@ -323,16 +323,31 @@ class NormalClassifierDetector(EnsembleDetector):
         return cls(model, positive_class=positive_class, name=name)
 
     @classmethod
-    def use_default(cls, *, positive_class: int | str | None = None) -> "NormalClassifierDetector":
-        """Load the checkpoint bundled with this package
-        (``src/weights/normal_classifier_augmented.pt``)."""
-        checkpoint = cls.DEFAULT_CHECKPOINT
+    def use_default(
+        cls,
+        *,
+        checkpoint: str | Path | None = None,
+        positive_class: int | str | None = None,
+        base_model: str | Path = DEFAULT_BASE_MODEL,
+        class_names: Sequence[str] | dict[int, str] | None = None,
+    ) -> "NormalClassifierDetector":
+        """Load a YOLO classification checkpoint.
+
+        ``checkpoint=`` takes an explicit ``.pt`` / ``.pth`` path; otherwise the
+        one bundled with this package
+        (``src/weights/normal_classifier_augmented.pt``).
+        """
+        checkpoint = Path(checkpoint).expanduser() if checkpoint is not None else cls.DEFAULT_CHECKPOINT
         if not checkpoint.is_file():
             raise FileNotFoundError(
-                f"Default checkpoint not found at {checkpoint}. Train one with "
-                "NormalClassifierTrainer and save it there, or call from_checkpoint(path)."
+                f"Checkpoint not found at {checkpoint}. Pass checkpoint=<path>, train "
+                "one with NormalClassifierTrainer and save it to "
+                f"{cls.DEFAULT_CHECKPOINT}, or call from_checkpoint(path)."
             )
-        return cls.from_checkpoint(checkpoint, positive_class=positive_class)
+        return cls.from_checkpoint(
+            checkpoint, positive_class=positive_class,
+            base_model=base_model, class_names=class_names,
+        )
 
     def predict(self, image: Image.Image, **kwargs: Any) -> DetectionResult:
         kwargs.setdefault("verbose", False)

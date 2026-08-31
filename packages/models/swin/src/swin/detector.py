@@ -161,14 +161,24 @@ class SwinDetector(ImageDetector):
                    device=device, positive_class=positive_class)
 
     @classmethod
-    def use_default(cls, *, device: str = "auto") -> "SwinDetector":
-        if not DEFAULT_CHECKPOINT.is_file():
+    def use_default(
+        cls,
+        *,
+        device: str = "auto",
+        checkpoint: str | Path | None = None,
+        positive_class: int | str | None = None,
+    ) -> "SwinDetector":
+        """``checkpoint=`` takes an explicit ``.pth`` path; otherwise the one
+        bundled with this package (``src/weights/best_swin_tiny_binary.pth``)."""
+        path = Path(checkpoint).expanduser() if checkpoint is not None else DEFAULT_CHECKPOINT
+        if not path.is_file():
             raise FileNotFoundError(
-                f"Swin checkpoint not found at {DEFAULT_CHECKPOINT}. Train one with "
-                "packages/models/swin/s3_swin_transformer_streaming.ipynb (it writes "
-                "best_swin_tiny_binary.pth) and place it there, or call from_checkpoint(path)."
+                f"Swin checkpoint not found at {path}. Pass checkpoint=<path>, train one "
+                "with packages/models/swin/s3_swin_transformer_streaming.ipynb (it writes "
+                f"best_swin_tiny_binary.pth) and place it at {DEFAULT_CHECKPOINT}, or "
+                "call from_checkpoint(path)."
             )
-        return cls.from_checkpoint(DEFAULT_CHECKPOINT, device=device)
+        return cls.from_checkpoint(path, device=device, positive_class=positive_class)
 
     # --- scoring -----------------------------------------------------
 
