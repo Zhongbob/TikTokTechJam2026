@@ -117,8 +117,9 @@ class StreamingAugmentedDataset:
         augment: when False, images are only decoded + resized -- use this for a
             validation or test stream you want left clean.
         num_augmentations: how many of the six transforms to chain onto *one*
-            output image. A fixed int (1-6) applies that many to every image; an
-            inclusive ``(min, max)`` pair draws a random count per image.
+            output image. A fixed int (0-6) applies that many to every image; an
+            inclusive ``(min, max)`` pair draws a random count per image. ``0``
+            (or a range starting at 0, e.g. ``(0, 6)``) leaves some images clean.
         variants_per_image: how many differently-augmented output images each
             source image produces (dataset expansion). Requires ``augment=True``;
             variant index is written to ``metadata["variant"]`` when > 1.

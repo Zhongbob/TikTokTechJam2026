@@ -96,14 +96,18 @@ class ImageAugmenter:
     def _resolve_num_augmentations(self, num_augmentations: int | tuple[int, int]) -> int:
         """Accept a fixed count or an inclusive ``(min, max)`` range; when a
         range is given, draw a per-call count uniformly from it so different
-        images get random-length transform chains."""
+        images get random-length transform chains.
+
+        ``0`` is allowed -- the image is passed through unchanged (bar the
+        ``output_size`` resize), so ``(0, 6)`` mixes clean and corrupted images.
+        """
         if isinstance(num_augmentations, int):
             low = high = num_augmentations
         else:
             low, high = num_augmentations
-        if not 1 <= low <= high <= len(self.TRANSFORMS):
+        if not 0 <= low <= high <= len(self.TRANSFORMS):
             raise ValueError(
-                "num_augmentations must be an int in 1..6, or a (min, max) pair within that range"
+                "num_augmentations must be an int in 0..6, or a (min, max) pair within that range"
             )
         return int(self.rng.integers(low, high + 1))
 
