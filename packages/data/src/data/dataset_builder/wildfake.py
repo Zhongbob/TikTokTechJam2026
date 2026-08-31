@@ -30,14 +30,27 @@ meta-classifier, even picking a threshold to keep) on these images leaks.
 
 from __future__ import annotations
 
+import math
 import os
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Iterator, Sequence
 
 from shared_types import SourceMetadata
 
 from .streaming import StreamingAugmentedDataset
+
+#: cap spec passed around: a single int, a per-source ``{source: int}`` map, or None.
+CapSpec = "int | Mapping[str, int] | None"
+
+
+def _cap_for(source: str, spec: "int | Mapping[str, int] | None") -> int | None:
+    if spec is None:
+        return None
+    if isinstance(spec, Mapping):
+        return spec.get(source)
+    return int(spec)
 
 WILDFAKE_REPO = "techjam-aigc/wildfake-eval-subset"
 
@@ -66,7 +79,7 @@ def iter_wildfake_encoded(
     split: str = "validation",
     *,
     sources: Sequence[str] | None = None,
-    max_per_source: int | None = None,
+    max_per_source: "int | Mapping[str, int] | None" = None,
     shuffle: bool = False,
     seed: int = 4,
     buffer_size: int = 100,
@@ -82,7 +95,9 @@ def iter_wildfake_encoded(
         config: one of ``WILDFAKE_SOURCE_COUNTS`` (``"default"``, ``"normalized"``,
             ``"laion_matched"``, ``"cross_generator"``).
         sources: keep only these ``source`` values; ``None`` keeps all.
-        max_per_source: cap emitted images per ``source`` (``None`` = no cap).
+        max_per_source: cap emitted images per ``source`` -- a single int (same
+            cap for every source), a per-source ``{source: int}`` map, or ``None``
+            for no cap.
         shuffle: stream through a shuffle buffer (default False -- benchmark
             order is deterministic anyway).
     """
@@ -98,14 +113,25 @@ def iter_wildfake_encoded(
         dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size)
 
     wanted = {str(s) for s in sources} if sources is not None else None
+
+    def _all_wanted_capped(counts: Counter[str]) -> bool:
+        if wanted is None:
+            return False  # other sources may still appear
+        for s in wanted:
+            cap = _cap_for(s, max_per_source)
+            if cap is None or counts[s] < cap:
+                return False
+        return True
+
     counts: Counter[str] = Counter()
     emitted = 0
     for example in dataset:
         source = str(example.get("source", "unknown"))
         if wanted is not None and source not in wanted:
             continue
-        if max_per_source is not None and counts[source] >= max_per_source:
-            if wanted is not None and all(counts[s] >= max_per_source for s in wanted):
+        cap = _cap_for(source, max_per_source)
+        if cap is not None and counts[source] >= cap:
+            if _all_wanted_capped(counts):
                 break
             continue
 
@@ -126,10 +152,37 @@ def iter_wildfake_encoded(
         yield data, metadata
 
 
+def _resolve_caps(
+    config: str,
+    chosen: Sequence[str],
+    max_per_source: "int | Mapping[str, int] | None",
+    fraction: float | None,
+) -> "int | Mapping[str, int] | None":
+    """Turn ``fraction`` into a per-source cap map (from the known counts);
+    otherwise pass ``max_per_source`` through. Rejects giving both."""
+    if fraction is None:
+        return max_per_source
+    if max_per_source is not None:
+        raise ValueError("pass either fraction= or max_per_source=, not both")
+    if not (0.0 < fraction <= 1.0):
+        raise ValueError("fraction must be in (0, 1] (0.1 = 10% of each source)")
+    known = WILDFAKE_SOURCE_COUNTS.get(config, {})
+    caps: dict[str, int] = {}
+    for source in chosen:
+        count = known.get(source)
+        if count is None:
+            raise ValueError(
+                f"fraction= needs known per-source counts; source {source!r} in "
+                f"config {config!r} isn't in WILDFAKE_SOURCE_COUNTS -- use max_per_source="
+            )
+        caps[source] = max(1, math.ceil(count * fraction))
+    return caps
+
+
 def _resolve_selection(
     config: str,
     sources: Sequence[str] | None,
-    max_per_source: int | None,
+    cap_spec: "int | Mapping[str, int] | None",
 ) -> tuple[list[str], int]:
     """(chosen source list, expected total) for progress/`__len__`."""
     known = WILDFAKE_SOURCE_COUNTS.get(config, {})
@@ -137,10 +190,11 @@ def _resolve_selection(
     total = 0
     for source in chosen:
         count = known.get(source)
+        cap = _cap_for(source, cap_spec)
         if count is None:
-            total += max_per_source or 0  # unknown source -> can't size precisely
-        elif max_per_source is not None:
-            total += min(count, max_per_source)
+            total += cap or 0  # unknown source -> can't size precisely
+        elif cap is not None:
+            total += min(count, cap)
         else:
             total += count
     return chosen, total
@@ -151,7 +205,8 @@ def eval_dataset(
     split: str = "validation",
     *,
     sources: Sequence[str] | None = None,
-    max_per_source: int | None = None,
+    fraction: float | None = None,
+    max_per_source: "int | Mapping[str, int] | None" = None,
     augment: bool = False,
     num_augmentations: int | tuple[int, int] = 6,
     variants_per_image: int = 1,
@@ -179,6 +234,17 @@ def eval_dataset(
     ``img_id`` -- so a per-``source`` breakdown works the same way the SID
     per-``label_name`` one does.
 
+    Subsetting (for a faster sanity-check pass):
+
+    * ``fraction`` -- take this share of *every* source, so the class balance is
+      kept (``fraction=0.1`` -> 10% of COCO + 10% of DALL-E 3). In ``(0, 1]``.
+    * ``max_per_source`` -- an absolute cap: one int for all sources, or a
+      ``{source: int}`` map. Mutually exclusive with ``fraction``.
+
+    Both take the *first* N per source (deterministic). With a subset, prefer
+    ``shuffle=True`` -- it makes the sample representative *and* lets the stream
+    stop early instead of scanning past the un-sampled rows.
+
     NOTE: in ``config="default"`` the real (COCO) images are all 200x200 while the
     fakes vary -- a size shortcut. Pass ``output_size=(224, 224)`` (or use
     ``config="normalized"``) for a fair evaluation.
@@ -188,8 +254,12 @@ def eval_dataset(
         val = eval_dataset(output_size=(224, 224), cache_dir="wildfake_cache")
         val.warm_cache()
         detector.evaluate(val, generate_confusion_matrix=True)
+
+        quick = eval_dataset(fraction=0.1, output_size=(224, 224))   # ~1,384 imgs
     """
-    chosen, total = _resolve_selection(config, sources, max_per_source)
+    provisional, _ = _resolve_selection(config, sources, None)
+    cap_spec = _resolve_caps(config, provisional, max_per_source, fraction)
+    chosen, total = _resolve_selection(config, sources, cap_spec)
     if total < 1:
         raise ValueError(
             f"can't size config={config!r} sources={sources!r} -- pass an explicit "
@@ -197,13 +267,23 @@ def eval_dataset(
         )
 
     source_tag = "all" if sources is None else "+".join(sorted(chosen))
-    cap_tag = f"-cap{max_per_source}" if max_per_source is not None else ""
-    cache_key = f"wildfake-{config}-{split}-{source_tag}{cap_tag}-raw"
+    if fraction is not None:
+        sel_tag = f"-frac{fraction:g}"
+    elif isinstance(max_per_source, Mapping):
+        sel_tag = "-cap" + "_".join(f"{k}{v}" for k, v in sorted(max_per_source.items()))
+    elif max_per_source is not None:
+        sel_tag = f"-cap{max_per_source}"
+    else:
+        sel_tag = ""
+    cache_key = f"wildfake-{config}-{split}-{source_tag}{sel_tag}-raw"
 
+    # Pass the resolved source list (not the raw `sources`) so the iterator can
+    # stop once every selected source has hit its cap instead of draining the
+    # whole parquet -- matters when `fraction`/`max_per_source` is set.
     return StreamingAugmentedDataset(
         encoded_source=lambda: iter_wildfake_encoded(
             config, split,
-            sources=sources, max_per_source=max_per_source,
+            sources=chosen, max_per_source=cap_spec,
             shuffle=shuffle, seed=seed, buffer_size=buffer_size, hf_token=hf_token,
         ),
         total=total,
