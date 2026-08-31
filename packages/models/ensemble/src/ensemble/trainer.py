@@ -44,6 +44,7 @@ class EnsembleTrainer(CombinerTrainer):
         autoencoder_device: str = "cpu",
         fusion_kwargs: dict[str, Any] | None = None,
         opensdi_repo_dir: str | Path | None = None,
+        member_kwargs: dict[str, dict[str, Any]] | None = None,
     ) -> "EnsembleTrainer":
         """Build with the same members as `EnsembleDetector.use_default` — pass
         the SAME ``use_autoencoder`` / member args you'll use at inference so the
@@ -56,5 +57,6 @@ class EnsembleTrainer(CombinerTrainer):
             autoencoder_device=autoencoder_device,
             fusion_kwargs=fusion_kwargs,
             opensdi_repo_dir=opensdi_repo_dir,
+            member_kwargs=member_kwargs,
         )
         return cls(members)

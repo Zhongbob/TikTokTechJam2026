@@ -159,7 +159,17 @@ class ClipViTB32Detector(ImageDetector):
     from_pretrained = from_checkpoint
 
     @classmethod
-    def use_default(cls, *, device: str = "auto", **kwargs: Any) -> "ClipViTB32Detector":
+    def use_default(
+        cls,
+        *,
+        device: str = "auto",
+        checkpoint: str | Path | None = None,
+        **kwargs: Any,
+    ) -> "ClipViTB32Detector":
+        """``checkpoint=`` takes an explicit ``.pt`` path; otherwise the first
+        ``clip_vit_b32*.pt`` in ``src/weights/`` then the repo root."""
+        if checkpoint is not None:
+            return cls.from_checkpoint(Path(checkpoint).expanduser(), device=device, **kwargs)
         for directory in (DEFAULT_WEIGHTS_DIR, REPO_ROOT):
             for pattern in ("clip_vit_b32*.pt", "clip*vit*b32*.pt", "clip_vit_b32*.pth"):
                 hits = sorted(directory.glob(pattern))
@@ -167,8 +177,8 @@ class ClipViTB32Detector(ImageDetector):
                     return cls.from_checkpoint(hits[0], device=device, **kwargs)
         raise FileNotFoundError(
             f"No CLIP ViT-B/32 checkpoint (clip_vit_b32*.pt) found in "
-            f"{DEFAULT_WEIGHTS_DIR} or {REPO_ROOT}. Put it in one of them or call "
-            "from_checkpoint(path)."
+            f"{DEFAULT_WEIGHTS_DIR} or {REPO_ROOT}. Pass checkpoint=<path>, put it "
+            "in one of them, or call from_checkpoint(path)."
         )
 
     # --- scoring -----------------------------------------------------

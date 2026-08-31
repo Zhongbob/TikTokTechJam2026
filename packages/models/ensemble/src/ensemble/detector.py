@@ -58,29 +58,31 @@ def _build_restorer(checkpoint: str | Path | None, device: str) -> Any:
     return AutoencoderRestorer.use_default()
 
 
-def _build_member(name: str, *, device: str) -> Any:
+def _build_member(name: str, *, device: str, **kwargs: Any) -> Any:
+    """``kwargs`` (from ``member_kwargs[name]``) are forwarded to the member's
+    ``use_default`` — e.g. ``checkpoint=`` / ``positive_class=`` / ``flip=``."""
     if name == "fusion":
         raise ValueError("build the 'fusion' member via build_default_ensemble_members")
     if name == "convnext_aigc":
         from convnext_aigc import ConvNextAIGCDetector
 
-        return ConvNextAIGCDetector.use_default(device=device)
+        return ConvNextAIGCDetector.use_default(device=device, **kwargs)
     if name == "clip_vit_b32":
         from clip_vit_b32 import ClipViTB32Detector
 
-        return ClipViTB32Detector.use_default(device=device)
+        return ClipViTB32Detector.use_default(device=device, **kwargs)
     if name == "dinov2":
         from dinov2 import DINOv2Detector
 
-        return DINOv2Detector.use_default(device=device)
+        return DINOv2Detector.use_default(device=device, **kwargs)
     if name == "normal_classifier":
         from normal_classifier import NormalClassifierDetector
 
-        return NormalClassifierDetector.use_default()
+        return NormalClassifierDetector.use_default(**kwargs)
     if name == "swin":
         from swin import SwinDetector
 
-        return SwinDetector.use_default(device=device)
+        return SwinDetector.use_default(device=device, **kwargs)
     raise ValueError(f"unknown ensemble member {name!r}")
 
 
@@ -93,6 +95,7 @@ def build_default_ensemble_members(
     autoencoder_device: str = "cpu",
     fusion_kwargs: dict[str, Any] | None = None,
     opensdi_repo_dir: str | Path | None = None,
+    member_kwargs: dict[str, dict[str, Any]] | None = None,
 ) -> list[Any]:
     """Construct the ensemble's member detectors (shared by
     `EnsembleDetector.use_default` and `EnsembleTrainer.use_default`).
@@ -101,8 +104,14 @@ def build_default_ensemble_members(
     restored image; the other members get the original. ``fusion_kwargs`` is
     forwarded to `fusion.FusionDetector.use_default` (e.g. ``method``,
     ``weights``, ``opensdi_*``); ``opensdi_repo_dir`` is a convenience shortcut.
+
+    ``member_kwargs`` = ``{member_name: {...}}`` forwarded to each member's
+    ``use_default`` — e.g. ``{"dinov2": {"checkpoint": "/content/dino.pt"},
+    "swin": {"checkpoint": "/content/swin.pth"}}``. (For ``"fusion"`` put the
+    args in ``fusion_kwargs`` instead.)
     """
     restorer = _build_restorer(autoencoder_checkpoint, autoencoder_device) if use_autoencoder else None
+    mkw = member_kwargs or {}
 
     members: list[Any] = []
     for name in include:
@@ -115,7 +124,7 @@ def build_default_ensemble_members(
             fusion = FusionDetector.use_default(device=device, **fk)
             members.append(_RestoreBeforePredict(fusion, restorer) if restorer is not None else fusion)
         else:
-            members.append(_build_member(name, device=device))
+            members.append(_build_member(name, device=device, **mkw.get(name, {})))
     return members
 
 
@@ -140,13 +149,15 @@ class EnsembleDetector(CombinerDetector):
         autoencoder_device: str = "cpu",
         fusion_kwargs: dict[str, Any] | None = None,
         opensdi_repo_dir: str | Path | None = None,
+        member_kwargs: dict[str, dict[str, Any]] | None = None,
     ) -> "EnsembleDetector":
         """Build the full ensemble. Each member downloads / loads its own weights
         on first use (see their ``use_default``); OpenSDI (inside the fusion
         member) needs ``opensdi_detector.setup_opensdi()`` first.
 
         ``use_autoencoder=True`` runs the autoencoder over the image before the
-        **fusion** member only.
+        **fusion** member only. ``member_kwargs={"dinov2": {"checkpoint": ...}}``
+        overrides a member's checkpoint / options.
         """
         members = build_default_ensemble_members(
             device=device,
@@ -156,5 +167,6 @@ class EnsembleDetector(CombinerDetector):
             autoencoder_device=autoencoder_device,
             fusion_kwargs=fusion_kwargs,
             opensdi_repo_dir=opensdi_repo_dir,
+            member_kwargs=member_kwargs,
         )
         return cls(members, method=method, weights=weights, decision_threshold=decision_threshold)

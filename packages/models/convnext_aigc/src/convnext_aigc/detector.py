@@ -107,7 +107,18 @@ class ConvNextAIGCDetector(ImageDetector):
     from_pretrained = from_checkpoint
 
     @classmethod
-    def use_default(cls, *, device: str = "auto", positive_index: int | None = None) -> "ConvNextAIGCDetector":
+    def use_default(
+        cls,
+        *,
+        device: str = "auto",
+        checkpoint: str | Path | None = None,
+        positive_index: int | None = None,
+    ) -> "ConvNextAIGCDetector":
+        """``checkpoint=`` takes an explicit ``.zip`` / model dir; otherwise the
+        first ``convnext_aigc*`` in ``src/weights/`` then the repo root."""
+        if checkpoint is not None:
+            return cls.from_checkpoint(Path(checkpoint).expanduser(), device=device,
+                                       positive_index=positive_index)
         for directory in (DEFAULT_WEIGHTS_DIR, REPO_ROOT):
             for pattern in ("convnext_aigc*", "convnext*aigc*"):
                 for hit in sorted(directory.glob(pattern)):
@@ -115,8 +126,8 @@ class ConvNextAIGCDetector(ImageDetector):
                         return cls.from_checkpoint(hit, device=device, positive_index=positive_index)
         raise FileNotFoundError(
             f"No ConvNeXt AIGC checkpoint (a run dir or *.zip) found in "
-            f"{DEFAULT_WEIGHTS_DIR} or {REPO_ROOT}. Put convnext_aigc_run.zip in one "
-            "of them or call from_checkpoint(path)."
+            f"{DEFAULT_WEIGHTS_DIR} or {REPO_ROOT}. Pass checkpoint=<path>, put "
+            "convnext_aigc_run.zip in one of them, or call from_checkpoint(path)."
         )
 
     # --- scoring -----------------------------------------------------

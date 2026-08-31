@@ -186,7 +186,17 @@ class DINOv2Detector(ImageDetector):
     from_pretrained = from_checkpoint
 
     @classmethod
-    def use_default(cls, *, device: str = "auto", **kwargs: Any) -> "DINOv2Detector":
+    def use_default(
+        cls,
+        *,
+        device: str = "auto",
+        checkpoint: str | Path | None = None,
+        **kwargs: Any,
+    ) -> "DINOv2Detector":
+        """``checkpoint=`` takes an explicit ``.pt`` path; otherwise the first
+        ``dino*.pt`` in ``src/weights/`` then the repo root."""
+        if checkpoint is not None:
+            return cls.from_checkpoint(Path(checkpoint).expanduser(), device=device, **kwargs)
         for directory in (DEFAULT_WEIGHTS_DIR, REPO_ROOT):
             for pattern in ("dino*.pt", "dinov2*.pt", "dino*.pth"):
                 hits = sorted(directory.glob(pattern))
@@ -194,7 +204,8 @@ class DINOv2Detector(ImageDetector):
                     return cls.from_checkpoint(hits[0], device=device, **kwargs)
         raise FileNotFoundError(
             f"No DINOv2 checkpoint (dino*.pt) found in {DEFAULT_WEIGHTS_DIR} or "
-            f"{REPO_ROOT}. Put it in one of them or call from_checkpoint(path)."
+            f"{REPO_ROOT}. Pass checkpoint=<path>, put it in one of them, or call "
+            "from_checkpoint(path)."
         )
 
     # --- scoring -----------------------------------------------------
