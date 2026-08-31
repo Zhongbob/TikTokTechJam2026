@@ -1,13 +1,21 @@
 [project]
 name = "ensemble"
 version = "0.1.0"
-description = "Ensemble Model which combines all listed models"
+description = "Ensemble detector: the fusion model + convnext_aigc + clip_vit_b32 + dinov2 + normal_classifier + swin, combined via detector_common.CombinerDetector (max / mean / weighted / meta). Optional autoencoder restoration for the fusion member."
 requires-python = ">=3.11"
 
 dependencies = [
-    "data"
-    # runtime deps specific to THIS package only
-    # e.g. "torch>=2.2", "transformers", "numpy"
+    "pillow>=10.0",
+    "scikit-learn>=1.3",
+    "detector_common",
+    "shared_types",
+    "fusion",
+    "convnext_aigc",
+    "clip_vit_b32",
+    "dinov2",
+    "normal_classifier",
+    "swin",
+    "autoencoder",
 ]
 
 [build-system]
@@ -15,7 +23,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ensemble"]      
+packages = ["src/ensemble"]
 
 [tool.uv.sources]
-data = { workspace = true }
+detector_common = { workspace = true }
+shared_types = { workspace = true }
+fusion = { workspace = true }
+convnext_aigc = { workspace = true }
+clip_vit_b32 = { workspace = true }
+dinov2 = { workspace = true }
+normal_classifier = { workspace = true }
+swin = { workspace = true }
+autoencoder = { workspace = true }
