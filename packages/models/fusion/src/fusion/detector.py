@@ -4,14 +4,18 @@ The two members it is built for:
 
 * **Community-Forensics** (`community_forensics.CommunityForensicsDetector`) —
   a whole-image ViT that catches *fully synthetic* (text-to-image) images.
-* **PSCC-Net** (`pscc_net.PSCCNetDetector`) — catches *locally tampered* images
-  (splice / copy-move / inpainting) that a whole-image classifier misses.
+  Near-perfect on SID's `synthetic` class, blind to local edits.
+* **OpenSDI / MaskCLIP** (`opensdi_detector.OpenSDIDetector`) — a
+  diffusion-inpainting *localizer* that catches *locally tampered* images
+  (SID's `tampered` class: real photos with an SD-inpainted region), which a
+  whole-image classifier misses. Blind to fully-synthetic images.
 
 They have complementary blind spots, so the default decider is deliberately
 dumb: **take the max of the members' p(ai) and compare it to a threshold** — if
-*either* model is confident the image is fake, the fusion says fake.
+*either* model is confident the image is fake, the fusion says fake. This only
+works because each member scores ~0 outside its own domain.
 
-    detector = FusionDetector.use_default()            # CF + PSCC-Net, combine="max"
+    detector = FusionDetector.use_default(opensdi_repo_dir="/path/to/OpenSDI")
     result   = detector.predict(pil_image)             # DetectionResult w/ per-member breakdown
     metrics  = detector.evaluate(val_samples, generate_confusion_matrix=True)
 
@@ -89,19 +93,32 @@ class FusionDetector(ImageDetector):
         device: str = "auto",
         combine: str = "max",
         decision_threshold: float = 0.5,
-        **member_kwargs: Any,
+        opensdi_repo_dir: str | Path | None = None,
+        opensdi_kwargs: dict[str, Any] | None = None,
     ) -> "FusionDetector":
-        """Build the default fusion: Community-Forensics + PSCC-Net.
+        """Build the default fusion: Community-Forensics + OpenSDI.
 
-        Downloads each member's weights on first use (see their own
-        ``use_default``). ``member_kwargs`` is forwarded to *both* members.
+        Community-Forensics downloads its weights on first use. OpenSDI needs a
+        one-time ``opensdi_detector.setup_opensdi()`` (clones the repo, installs
+        ``IMDLBenCo`` + OpenAI ``clip``, downloads the ~3.1 GB MaskCLIP
+        checkpoint); after that ``opensdi_repo_dir`` can be omitted (it reads
+        ``OPENSDI_REPO``).
+
+        OpenSDI is wired as a tamper *localizer*: ``score_mode="mask"`` /
+        ``mask_reduce="max"`` ("is any region flagged as edited?"). Override via
+        ``opensdi_kwargs``.
         """
         from community_forensics import CommunityForensicsDetector
-        from pscc_net import PSCCNetDetector
+        from opensdi_detector import OpenSDIDetector
+
+        score_kwargs: dict[str, Any] = {"score_mode": "mask", "mask_reduce": "max"}
+        score_kwargs.update(opensdi_kwargs or {})
 
         members = [
             CommunityForensicsDetector.use_default(device=device),
-            PSCCNetDetector.use_default(device=device, **member_kwargs),
+            OpenSDIDetector.use_default(
+                device=device, repo_dir=opensdi_repo_dir, **score_kwargs
+            ),
         ]
         return cls(members, combine=combine, decision_threshold=decision_threshold)
 

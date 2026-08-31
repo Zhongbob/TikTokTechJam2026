@@ -4,8 +4,8 @@ Right now `FusionDetector` combines its members with a fixed rule
 (``combine="max"``) and needs **no training**. This module is a placeholder for
 the day a learned combiner is wanted instead: a small classifier (logistic
 regression / gradient-boosted trees / a 2-layer MLP) that takes the vector of
-member p(ai) scores — e.g. ``[p_community_forensics, p_pscc_net]`` — plus
-optionally cheap extra features (PSCC-Net mask stats, image size, …) and outputs
+member p(ai) scores — e.g. ``[p_community_forensics, p_opensdi]`` — plus
+optionally cheap extra features (OpenSDI mask stats, image size, …) and outputs
 the fused p(ai).
 
 Every method below is intentionally a stub that raises ``NotImplementedError``.

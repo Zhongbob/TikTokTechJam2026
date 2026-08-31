@@ -16,13 +16,15 @@ or uses ``pred_label`` directly.
 
 ⚠️ FIDELITY: MaskCLIP's class (``model/MaskCLIP.py``) plus ``prompt_learner`` /
 ``clip_utils`` are NOT vendored — they need the OpenSDI repo, plus
-``IMDLBenCo`` and OpenAI ``clip`` (``pip install IMDLBenCo
-git+https://github.com/openai/CLIP.git``). Pass ``repo_dir=`` (a clone of
-iamwangyabin/OpenSDI) or an ``arch_factory``.
+``IMDLBenCo`` and OpenAI ``clip``. Run ``opensdi_detector.setup_opensdi()`` (or
+``python -m opensdi_detector.bootstrap``) once to clone the repo, install the
+deps and download every weight; then ``OpenSDIDetector.use_default()`` just
+works. For a manual setup, pass ``repo_dir=`` (a clone of iamwangyabin/OpenSDI)
+or an ``arch_factory``.
 
 ``clip_utils.py`` also hard-``torch.load``s ``weights/mae_pretrain_vit_base.pth``
-(relative to the cwd); ``from_checkpoint()`` auto-downloads it (or copies from
-``mae_weights=``) before building the model.
+(relative to the cwd); the bootstrap places it there, and ``from_checkpoint()``
+otherwise auto-downloads it (or copies from ``mae_weights=``).
 
 The ``pred_label`` positive index and mask->probability reduction are
 heuristics — validate on a labelled set and flip / switch ``score_mode`` if
@@ -233,12 +235,19 @@ class OpenSDIDetector(ImageDetector):
     ) -> "OpenSDIDetector":
         repo_dir = repo_dir or os.environ.get("OPENSDI_REPO")
         checkpoint = DEFAULT_WEIGHTS_DIR / checkpoint_name
+        if not checkpoint.is_file():
+            # fall back to any MaskCLIP*.pth the bootstrap script dropped in
+            matches = sorted(DEFAULT_WEIGHTS_DIR.glob("MaskCLIP*.pth"))
+            if matches:
+                checkpoint = matches[-1]
         if not checkpoint.is_file() or not repo_dir:
             raise FileNotFoundError(
-                "OpenSDI needs a checkpoint and the official repo. Clone "
-                "https://github.com/iamwangyabin/OpenSDI, download the MaskCLIP weights from "
-                f"https://huggingface.co/nebula/MaskCLIP-weights to {checkpoint}, then set "
-                "OPENSDI_REPO=<clone> or call from_checkpoint(path, repo_dir=<clone>)."
+                "OpenSDI needs a checkpoint and the official repo. Run "
+                "`python -m opensdi_detector.bootstrap` (or "
+                "`from opensdi_detector import setup_opensdi; setup_opensdi()`), "
+                "which clones https://github.com/iamwangyabin/OpenSDI and downloads "
+                f"the MaskCLIP weights to {DEFAULT_WEIGHTS_DIR}. Otherwise set "
+                "OPENSDI_REPO=<clone> and pass repo_dir=/checkpoint yourself."
             )
         return cls.from_checkpoint(checkpoint, repo_dir=repo_dir, device=device, **score_kwargs)
 

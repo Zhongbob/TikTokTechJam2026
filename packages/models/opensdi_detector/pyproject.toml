@@ -9,6 +9,7 @@ dependencies = [
     "torchvision>=0.17",
     "numpy>=1.26",
     "pillow>=10.0",
+    "huggingface-hub>=0.20",
     "shared_types",
     "detector_common",
 ]
