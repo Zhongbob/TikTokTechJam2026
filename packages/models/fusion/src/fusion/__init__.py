@@ -2,15 +2,25 @@
 
 `FusionDetector` (inference) implements the shared
 `detector_common.ImageDetector` / `shared_types.interfaces.EnsembleDetector`
-contract. Default decider: ``max`` of the members' p(ai) vs a threshold — fake
-if *either* the whole-image synthetic detector (Community-Forensics) or the
-diffusion-inpainting tamper localizer (OpenSDI / MaskCLIP) fires.
+contract. ``method`` picks how member p(ai) scores are fused before the
+threshold:
 
-`FusionTrainer` (training) is a **placeholder** for a future learned
-meta-classifier over member scores; every method raises ``NotImplementedError``.
+* ``"max"`` / ``"threshold"`` (default) — the simple threshold split.
+* ``"weighted"`` — ``sum(w_i * p_i)``; fit ``weights`` with `FusionTrainer`.
+* ``"meta"`` — a learned combiner (still a trainer stub).
+
+`FusionTrainer` (training) implements ``optimal_weights()`` — a grid search over
+the member-weight simplex for the split that best separates real from AI on
+example data — plus ``train`` / ``evaluate`` / ``save`` / ``load`` /
+``as_detector``. The meta-classifier path is still a stub.
 """
 
-from fusion.detector import FusionDetector
+from fusion.detector import FusionDetector, build_default_members, DEFAULT_MAX_THRESHOLD
 from fusion.trainer import FusionTrainer
 
-__all__ = ["FusionDetector", "FusionTrainer"]
+__all__ = [
+    "FusionDetector",
+    "FusionTrainer",
+    "build_default_members",
+    "DEFAULT_MAX_THRESHOLD",
+]
