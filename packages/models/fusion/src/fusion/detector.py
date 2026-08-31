@@ -15,8 +15,9 @@ fused into one `p(ai)`, which is then compared to `decision_threshold`:
 
     * ``"max"`` / ``"threshold"`` (default) — ``max(member p(ai))``. The simple
       threshold split: fake if *either* member exceeds the threshold. Works
-      because each member scores ~0 outside its own domain. Tuned threshold on
-      SID (CF + OpenSDI) ≈ 0.19 (`DEFAULT_MAX_THRESHOLD`).
+      because each member scores ~0 outside its own domain. Default
+      ``decision_threshold`` for this method is ``DEFAULT_MAX_THRESHOLD`` (0.19,
+      tuned on SID with CF + OpenSDI); other methods default to 0.5.
     * ``"mean"`` — unweighted average.
     * ``"weighted"`` — ``sum(w_i * p_i) / sum(w_i)``; needs ``weights=[...]``
       matching the members. Fit them with `fusion.trainer.FusionTrainer`.
@@ -104,7 +105,7 @@ class FusionDetector(ImageDetector):
         *,
         method: str = "max",
         weights: Sequence[float] | None = None,
-        decision_threshold: float = 0.5,
+        decision_threshold: float | None = None,
         meta_classifier: Any | None = None,
         name: str | None = None,
     ) -> None:
@@ -116,6 +117,9 @@ class FusionDetector(ImageDetector):
             raise ValueError(
                 f"method must be one of {sorted(_METHODS)} (or 'threshold' == 'max')"
             )
+        # method="max" is tuned to DEFAULT_MAX_THRESHOLD on SID; other methods -> 0.5.
+        if decision_threshold is None:
+            decision_threshold = DEFAULT_MAX_THRESHOLD if method == "max" else 0.5
         if method == "weighted":
             if weights is None or len(weights) != len(members):
                 raise ValueError("method='weighted' needs weights= matching members")
@@ -164,9 +168,9 @@ class FusionDetector(ImageDetector):
         ``/content/OpenSDI``. ``opensdi_weights_dir`` / ``opensdi_checkpoint``
         override where the ``.pth`` is found.
 
-        ``decision_threshold=None`` picks a sensible default per method
-        (``DEFAULT_MAX_THRESHOLD`` for ``"max"``, else 0.5). For
-        ``method="weighted"`` pass ``weights=`` (from `FusionTrainer`).
+        ``decision_threshold`` defaults per method (``DEFAULT_MAX_THRESHOLD`` =
+        0.19 for ``"max"``, else 0.5). For ``method="weighted"`` pass ``weights=``
+        (from `FusionTrainer`).
         """
         members = build_default_members(
             device=device,
@@ -175,14 +179,11 @@ class FusionDetector(ImageDetector):
             opensdi_checkpoint=opensdi_checkpoint,
             opensdi_kwargs=opensdi_kwargs,
         )
-        canonical = _METHOD_ALIASES.get(method, method)
-        if decision_threshold is None:
-            decision_threshold = DEFAULT_MAX_THRESHOLD if canonical == "max" else 0.5
         return cls(
             members,
             method=method,
             weights=weights,
-            decision_threshold=decision_threshold,
+            decision_threshold=decision_threshold,  # None -> per-method default in __init__
         )
 
     # --- scoring -----------------------------------------------------
@@ -212,8 +213,13 @@ class FusionDetector(ImageDetector):
             assert self._weights is not None
             total = sum(self._weights) or 1.0
             return sum(p * w for p, w in zip(probs, self._weights)) / total
-        # "meta"
-        return float(self._meta.predict_proba([list(probs)])[0][1])
+        # "meta" — a fusion._meta.MetaClassifier, or any estimator with
+        # predict_fake_proba / predict_proba over the raw member-prob vector.
+        row = [list(probs)]
+        if hasattr(self._meta, "predict_fake_proba"):
+            return float(self._meta.predict_fake_proba(row)[0])
+        proba = self._meta.predict_proba(row)[0]
+        return float(proba[1] if len(proba) > 1 else proba[0])
 
     def _score(self, image: Image.Image) -> float:
         probs = [r.ai_generated_probability for r in self.member_predictions(image)]

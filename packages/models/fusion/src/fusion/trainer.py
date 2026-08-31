@@ -1,19 +1,21 @@
 """Trainer for the fusion model's combination parameters.
 
-Two jobs, only one of them real today:
+Fits the parameters for two of `FusionDetector`'s methods:
 
-* **weight fitting** (implemented) — ``optimal_weights()`` grid-searches the
-  member-weight simplex for the split that best separates real from AI on some
-  labelled example data, and reports the operating threshold to go with it. This
-  is what powers ``FusionDetector(method="weighted")``.
-* **meta-classifier** (stub) — a learned combiner over the member score vector.
-  ``fit_meta_classifier()`` raises ``NotImplementedError`` until it's wanted.
+* **``method="weighted"``** — ``optimal_weights()`` grid-searches the
+  member-weight simplex for the linear split that best separates real from AI,
+  plus its operating threshold.
+* **``method="meta"``** — ``fit_meta_classifier()`` trains a small **tree-based**
+  combiner (dependency-free CART by default, or ``sklearn`` / ``xgboost``) over
+  the member score vector. Trees learn threshold-branching logic, which fits two
+  non-corroborating specialists far better than a linear blend.
+
+``compare_methods()`` fits both and evaluates ``max`` / ``weighted`` / ``meta``
+side by side on a held-out split so you can pick the winner.
 
     trainer = FusionTrainer.use_default(opensdi_repo_dir="/content/OpenSDI")
-    report  = trainer.train(train_samples, objective="balanced_accuracy")
-    #   -> {"weights": [0.62, 0.38], "threshold": 0.21, "balanced_accuracy": ...}
-    detector = trainer.as_detector()          # FusionDetector, method="weighted"
-    trainer.save("fusion_weights.json")
+    table   = trainer.compare_methods(train_samples, val_samples)
+    detector = trainer.as_detector(method="meta")     # or "weighted" / "max"
 
 Members are the same two detectors `FusionDetector` uses (Community-Forensics +
 OpenSDI), built via the shared `fusion.detector.build_default_members`.
@@ -50,13 +52,17 @@ except Exception:  # pragma: no cover - tiny fallback
         return (wins + 0.5 * ties) / (len(positives) * len(negatives))
 
 
-_META_STUB = (
-    "meta-classifier training is not implemented — the fusion currently supports "
-    "the fixed 'max' rule and fitted 'weighted' rule. Use optimal_weights()/train() "
-    "for the weighted method."
-)
-
 _OBJECTIVES = {"balanced_accuracy", "accuracy", "f1", "youden", "auc"}
+
+
+def _classify_report(scores: Sequence[float], y: Sequence[int], threshold: float) -> dict[str, float]:
+    """Full metric set for a score vector at one threshold, plus ROC-AUC."""
+    pos = [s for s, t in zip(scores, y) if t == 1]
+    neg = [s for s, t in zip(scores, y) if t == 0]
+    metrics = _metrics_at(scores, y, threshold)
+    metrics["roc_auc"] = _roc_auc(pos, neg)
+    metrics["n_samples"] = float(len(y))
+    return {k: (round(float(v), 4) if isinstance(v, float) else float(v)) for k, v in metrics.items()}
 
 
 # --- search helpers ----------------------------------------------------------
@@ -168,11 +174,13 @@ class FusionTrainer(ClassifierTrainableModel):
         meta_classifier: Any | None = None,
     ) -> None:
         self._members = list(members) if members is not None else []
-        self._meta = meta_classifier
         #: filled by optimal_weights()/train()
         self.weights_: list[float] | None = None
         self.threshold_: float | None = None
         self.metrics_: dict[str, float] | None = None
+        #: filled by fit_meta_classifier()
+        self.meta_: Any | None = meta_classifier
+        self.meta_threshold_: float = 0.5
 
     # --- construction ------------------------------------------------
 
@@ -348,39 +356,232 @@ class FusionTrainer(ClassifierTrainableModel):
     def evaluate(
         self, samples: Iterable[LabeledImageSample], **kwargs: Any
     ) -> dict[str, float]:
-        """Score the *current* fitted weights/threshold on held-out ``samples``."""
-        if self.weights_ is None or self.threshold_ is None:
-            raise RuntimeError("nothing fitted yet — call train()/optimal_weights() first")
+        """Score the *current* fit on held-out ``samples``. Uses the meta
+        classifier if one is fitted, else the fitted weights."""
         X, y = self.member_score_matrix(samples)
+        if self.meta_ is not None:
+            scores = self.meta_.predict_fake_proba(X)
+            return _classify_report(scores, y, self.meta_threshold_)
+        if self.weights_ is None or self.threshold_ is None:
+            raise RuntimeError("nothing fitted yet — call train() / fit_meta_classifier() first")
         fused = [_fuse(row, self.weights_) for row in X]
-        pos = [s for s, t in zip(fused, y) if t == 1]
-        neg = [s for s, t in zip(fused, y) if t == 0]
-        metrics = _metrics_at(fused, y, self.threshold_)
-        metrics["roc_auc"] = _roc_auc(pos, neg)
-        metrics["n_samples"] = float(len(y))
-        return {k: float(v) for k, v in metrics.items()}
+        return _classify_report(fused, y, self.threshold_)
+
+    # --- the other real job: fit a tree-based meta-classifier -----
+
+    def fit_meta_classifier(
+        self,
+        samples: Iterable[LabeledImageSample] | None = None,
+        *,
+        kind: str = "tree",
+        feature_spec: str | Sequence[str] = "probs",
+        estimator: Any | None = None,
+        objective: str = "balanced_accuracy",
+        max_fpr: float | None = None,
+        tune_threshold: bool = True,
+        threshold_step: float = 0.005,
+        X: Sequence[Sequence[float]] | None = None,
+        y: Sequence[int] | None = None,
+        val_samples: Iterable[LabeledImageSample] | None = None,
+        X_val: Sequence[Sequence[float]] | None = None,
+        y_val: Sequence[int] | None = None,
+        **estimator_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Train a tree-based combiner over the member score vectors.
+
+        kind: ``"tree"`` (default, dependency-free shallow CART), ``"sklearn-tree"``,
+            ``"forest"``, ``"gboost"`` (HistGradientBoosting), or ``"xgboost"``.
+            Ignored if ``estimator=`` (any ``fit`` / ``predict_proba`` object) is given.
+        feature_spec: ``"probs"`` (default — just the raw member p(ai)) or
+            ``"augmented"`` (also max / min / mean / abs_diff / product), or a
+            custom list of those names.
+        tune_threshold: sweep the meta output for the best ``objective`` (or best
+            recall subject to ``max_fpr``); otherwise the threshold stays 0.5.
+
+        Fits ``self.meta_`` / ``self.meta_threshold_`` and returns a report with
+        ``feature_importances``, the tree ``rules`` (for tree kinds), and
+        ``train`` (+ ``val`` if val data given) metric dicts.
+        """
+        from fusion._meta import MetaClassifier, default_estimator
+
+        if X is None or y is None:
+            if samples is None:
+                raise ValueError("pass either samples= or both X= and y=")
+            X, y = self.member_score_matrix(samples)
+        X = [list(map(float, row)) for row in X]
+        y = [int(v) for v in y]
+        if not any(t == 1 for t in y) or not any(t == 0 for t in y):
+            raise ValueError("need both classes (0 and 1) present in the labels")
+
+        est = estimator if estimator is not None else default_estimator(kind, **estimator_kwargs)
+        meta = MetaClassifier(est, feature_spec=feature_spec, member_names=self.member_names)
+        meta.fit(X, y)
+
+        train_scores = meta.predict_fake_proba(X)
+        if tune_threshold:
+            op = _pick_threshold(train_scores, y, objective=objective,
+                                 max_fpr=max_fpr, step=threshold_step)
+            meta_threshold = op["threshold"]
+        else:
+            meta_threshold = 0.5
+
+        self.meta_ = meta
+        self.meta_threshold_ = float(meta_threshold)
+
+        report: dict[str, Any] = {
+            "kind": "custom" if estimator is not None else kind,
+            "feature_spec": feature_spec,
+            "feature_names": meta.feature_names,
+            "feature_importances": meta.feature_importances_,
+            "threshold": round(self.meta_threshold_, 4),
+            "objective": objective,
+            "n_samples": len(y),
+            "member_names": self.member_names,
+            "train": _classify_report(train_scores, y, self.meta_threshold_),
+        }
+        rules = meta.rules_text()
+        if rules:
+            report["rules"] = rules
+
+        if X_val is None and val_samples is not None:
+            X_val, y_val = self.member_score_matrix(val_samples)
+        if X_val is not None and y_val is not None:
+            X_val = [list(map(float, r)) for r in X_val]
+            y_val = [int(v) for v in y_val]
+            report["val"] = _classify_report(meta.predict_fake_proba(X_val), y_val, self.meta_threshold_)
+
+        return report
+
+    # --- experiment harness: compare every method ---------------
+
+    def compare_methods(
+        self,
+        train_samples: Iterable[LabeledImageSample] | None = None,
+        val_samples: Iterable[LabeledImageSample] | None = None,
+        *,
+        X_train: Sequence[Sequence[float]] | None = None,
+        y_train: Sequence[int] | None = None,
+        X_val: Sequence[Sequence[float]] | None = None,
+        y_val: Sequence[int] | None = None,
+        objective: str = "balanced_accuracy",
+        max_fpr: float | None = None,
+        meta_kinds: Sequence[str] = ("tree", "gboost"),
+        feature_specs: Sequence[str] = ("probs",),
+        fixed_max_threshold: float | None = None,
+    ) -> dict[str, dict[str, float]]:
+        """Fit ``weighted`` + every ``meta`` variant on the train split and score
+        ``max`` / ``weighted`` / ``meta`` (and each bare member) on the val split
+        (falls back to the train split, with a warning, if no val given).
+
+        Returns ``{method_name: metric_dict}`` — sort by ``balanced_accuracy`` or
+        whatever you care about. ``meta_kinds`` you don't have installed are
+        skipped with a note.
+
+        This is a read-only benchmark: it restores the trainer's fitted state
+        afterwards, so run ``optimal_weights()`` / ``fit_meta_classifier()`` for
+        the method you pick.
+        """
+        from fusion.detector import DEFAULT_MAX_THRESHOLD
+
+        snapshot = (self.weights_, self.threshold_, self.metrics_,
+                    self.meta_, self.meta_threshold_)
+
+        if X_train is None or y_train is None:
+            if train_samples is None:
+                raise ValueError("pass train_samples= or X_train=/y_train=")
+            X_train, y_train = self.member_score_matrix(train_samples)
+        X_train = [list(map(float, r)) for r in X_train]
+        y_train = [int(v) for v in y_train]
+
+        if X_val is None or y_val is None:
+            if val_samples is not None:
+                X_val, y_val = self.member_score_matrix(val_samples)
+            else:
+                print("[fusion] compare_methods: no val split — scoring on the train "
+                      "split (optimistic).")
+                X_val, y_val = X_train, y_train
+        X_val = [list(map(float, r)) for r in X_val]
+        y_val = [int(v) for v in y_val]
+
+        results: dict[str, dict[str, float]] = {}
+
+        # bare members
+        for i, name in enumerate(self.member_names or [f"member{i}" for i in range(len(X_train[0]))]):
+            col_tr = [r[i] for r in X_train]
+            col_va = [r[i] for r in X_val]
+            op = _pick_threshold(col_tr, y_train, objective=objective, max_fpr=max_fpr, step=0.005)
+            results[f"member:{name}"] = _classify_report(col_va, y_val, op["threshold"])
+
+        # max
+        max_tr = [max(r) for r in X_train]
+        max_va = [max(r) for r in X_val]
+        thr = (fixed_max_threshold if fixed_max_threshold is not None
+               else _pick_threshold(max_tr, y_train, objective=objective,
+                                    max_fpr=max_fpr, step=0.005)["threshold"])
+        results["max"] = _classify_report(max_va, y_val, thr)
+        results["max@default"] = _classify_report(max_va, y_val, DEFAULT_MAX_THRESHOLD)
+
+        # weighted
+        self.optimal_weights(X=X_train, y=y_train, objective=objective, max_fpr=max_fpr)
+        w_va = [_fuse(r, self.weights_) for r in X_val]
+        results["weighted"] = _classify_report(w_va, y_val, self.threshold_)
+
+        # meta variants
+        for kind in meta_kinds:
+            for spec in feature_specs:
+                tag = f"meta:{kind}" + ("" if spec == "probs" else f"[{spec}]")
+                try:
+                    rep = self.fit_meta_classifier(
+                        X=X_train, y=y_train, kind=kind, feature_spec=spec,
+                        objective=objective, max_fpr=max_fpr,
+                        X_val=X_val, y_val=y_val,
+                    )
+                except ImportError as error:
+                    print(f"[fusion] skipping {tag}: {error}")
+                    continue
+                results[tag] = rep["val"]
+
+        (self.weights_, self.threshold_, self.metrics_,
+         self.meta_, self.meta_threshold_) = snapshot
+        return results
+
+    # --- persistence -------------------------------------------
 
     def save(self, path: str | Path) -> None:
-        """Persist the fitted weights + threshold (JSON). Members are not saved —
-        they come from `FusionTrainer.use_default` / your own list."""
-        if self.weights_ is None:
-            raise RuntimeError("nothing fitted yet — call train()/optimal_weights() first")
-        Path(path).write_text(json.dumps({
+        """Persist the fitted parameters. Writes a JSON manifest at ``path``; if a
+        meta classifier is fitted it also writes ``<path>.meta.pkl`` alongside.
+        Members are not saved (rebuild via `FusionTrainer.use_default`)."""
+        path = Path(path)
+        manifest: dict[str, Any] = {
+            "member_names": self.member_names,
             "weights": self.weights_,
             "threshold": self.threshold_,
-            "member_names": self.member_names,
             "metrics": self.metrics_ or {},
-        }, indent=2), encoding="utf-8")
+            "meta_threshold": self.meta_threshold_,
+            "has_meta": self.meta_ is not None,
+        }
+        if self.meta_ is not None:
+            meta_path = path.with_suffix(path.suffix + ".meta.pkl")
+            self.meta_.save(meta_path)
+            manifest["meta_file"] = meta_path.name
+        path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     @classmethod
     def load(cls, path: str | Path, *, members: Sequence[Any] | None = None) -> "FusionTrainer":
-        """Reload fitted weights from `save()`. Pass ``members=`` (or call
-        ``attach_members`` after) to make ``as_detector()`` usable."""
-        blob = json.loads(Path(path).read_text(encoding="utf-8"))
+        """Reload a `save()` bundle. Pass ``members=`` to make ``as_detector()`` usable."""
+        path = Path(path)
+        blob = json.loads(path.read_text(encoding="utf-8"))
         trainer = cls(members)
-        trainer.weights_ = [float(w) for w in blob["weights"]]
-        trainer.threshold_ = float(blob["threshold"])
+        if blob.get("weights") is not None:
+            trainer.weights_ = [float(w) for w in blob["weights"]]
+        trainer.threshold_ = blob.get("threshold")
         trainer.metrics_ = blob.get("metrics") or None
+        trainer.meta_threshold_ = float(blob.get("meta_threshold", 0.5))
+        if blob.get("has_meta"):
+            from fusion._meta import MetaClassifier
+
+            meta_path = path.with_name(blob.get("meta_file", path.name + ".meta.pkl"))
+            trainer.meta_ = MetaClassifier.load(meta_path)
         return trainer
 
     # --- handoff to inference ------------------------------------
@@ -391,27 +592,45 @@ class FusionTrainer(ClassifierTrainableModel):
     def as_detector(
         self,
         *,
+        method: str = "meta",
         members: Sequence[Any] | None = None,
         decision_threshold: float | None = None,
         **fusion_kwargs: Any,
     ) -> FusionDetector:
-        """Build a ``method="weighted"`` `FusionDetector` from the fitted weights."""
-        if self.weights_ is None:
-            raise RuntimeError("nothing fitted yet — call train()/optimal_weights() first")
+        """Build a `FusionDetector` from what's been fitted.
+
+        ``method``: ``"meta"`` (default, needs ``fit_meta_classifier``),
+        ``"weighted"`` (needs ``optimal_weights``/``train``), or ``"max"``.
+        """
         use_members = list(members) if members is not None else self._members
         if not use_members:
             raise RuntimeError("no members — pass members= or build via FusionTrainer.use_default")
-        return FusionDetector(
-            use_members,
-            method="weighted",
-            weights=self.weights_,
-            decision_threshold=(self.threshold_ if decision_threshold is None
-                                else float(decision_threshold)),
-            **fusion_kwargs,
-        )
 
-    # --- meta-classifier (future) -------------------------------
-
-    def fit_meta_classifier(self, samples: Iterable[LabeledImageSample], **kwargs: Any) -> Any:
-        """Train a learned combiner over the member score vectors. **Not implemented.**"""
-        raise NotImplementedError(_META_STUB)
+        if method == "meta":
+            if self.meta_ is None:
+                raise RuntimeError("no meta classifier — call fit_meta_classifier() first")
+            det = FusionDetector(
+                use_members, method="max",  # placeholder; replaced below
+                decision_threshold=(self.meta_threshold_ if decision_threshold is None
+                                    else float(decision_threshold)),
+                **fusion_kwargs,
+            )
+            det.attach_meta_classifier(self.meta_)
+            if decision_threshold is None:
+                det.decision_threshold = self.meta_threshold_
+            return det
+        if method == "weighted":
+            if self.weights_ is None:
+                raise RuntimeError("no weights — call optimal_weights()/train() first")
+            return FusionDetector(
+                use_members, method="weighted", weights=self.weights_,
+                decision_threshold=(self.threshold_ if decision_threshold is None
+                                    else float(decision_threshold)),
+                **fusion_kwargs,
+            )
+        if method == "max":
+            return FusionDetector(
+                use_members, method="max",
+                decision_threshold=decision_threshold, **fusion_kwargs,
+            )
+        raise ValueError("method must be 'meta', 'weighted', or 'max'")

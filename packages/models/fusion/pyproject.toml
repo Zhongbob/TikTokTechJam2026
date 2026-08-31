@@ -6,11 +6,17 @@ requires-python = ">=3.11"
 
 dependencies = [
     "pillow>=10.0",
+    "scikit-learn>=1.3",
     "shared_types",
     "detector_common",
     "community_forensics",
     "opensdi_detector",
 ]
+
+# `kind="xgboost"` for the meta-classifier additionally needs xgboost:
+#   pip install xgboost
+[project.optional-dependencies]
+xgboost = ["xgboost>=2.0"]
 
 [build-system]
 requires = ["hatchling"]

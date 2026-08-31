@@ -5,22 +5,24 @@
 contract. ``method`` picks how member p(ai) scores are fused before the
 threshold:
 
-* ``"max"`` / ``"threshold"`` (default) — the simple threshold split.
+* ``"max"`` / ``"threshold"`` (default, threshold 0.19) — the simple OR-rule.
 * ``"weighted"`` — ``sum(w_i * p_i)``; fit ``weights`` with `FusionTrainer`.
-* ``"meta"`` — a learned combiner (still a trainer stub).
+* ``"meta"`` — a tree-based combiner (`fusion._meta.MetaClassifier`) fitted by
+  `FusionTrainer.fit_meta_classifier`.
 
-`FusionTrainer` (training) implements ``optimal_weights()`` — a grid search over
-the member-weight simplex for the split that best separates real from AI on
-example data — plus ``train`` / ``evaluate`` / ``save`` / ``load`` /
-``as_detector``. The meta-classifier path is still a stub.
+`FusionTrainer` (training) implements ``optimal_weights()`` (weighted method),
+``fit_meta_classifier()`` (meta method — dependency-free CART / sklearn / xgboost)
+and ``compare_methods()`` to benchmark max / weighted / meta side by side.
 """
 
 from fusion.detector import FusionDetector, build_default_members, DEFAULT_MAX_THRESHOLD
 from fusion.trainer import FusionTrainer
+from fusion._meta import MetaClassifier
 
 __all__ = [
     "FusionDetector",
     "FusionTrainer",
+    "MetaClassifier",
     "build_default_members",
     "DEFAULT_MAX_THRESHOLD",
 ]
